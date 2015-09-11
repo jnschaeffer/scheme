@@ -21,18 +21,58 @@
 %token <obj> NUM STRING IDENT BOOLEAN CHAR
 %token LPAREN RPAREN LVEC LU8VEC QUOTE BACKTICK COMMA COMMAAT DOT
 %token WSPACE
+%token IF
 
-%type <obj> datum simple_datum compound_datum list vector expr
-%type <objs> list_items
+%type <obj> datum simple_datum compound_datum list vector expr quotation
+%type <obj> literal self_evaluating procedure
+%type <objs> list_items exprs
 
-%start expr
+%start start
 
 %%
 
-expr:
-  datum
+start:
+  expr
   {
-    root = $$
+    root = $1
+  }
+
+expr:
+  IDENT
+| literal
+| procedure
+
+procedure:
+  LPAREN exprs RPAREN
+  {
+    $$ = vecToList($2)
+  }
+
+exprs:
+  expr
+  {
+    $$ = []*object{$1}
+  }
+| exprs expr
+  {
+    $$ = append($1, $2)
+  }
+
+literal:
+  quotation
+| self_evaluating
+
+self_evaluating:
+  BOOLEAN
+| NUM
+| vector
+| CHAR
+| STRING
+
+quotation:
+  QUOTE datum
+  {
+	$$ = cons(symbolObj("quote"), cons($2, emptyList))
   }
 
 datum:
@@ -52,10 +92,7 @@ compound_datum:
 list:
   LPAREN list_items RPAREN
   {
-    $$ = emptyList
-    for i := len($2)-1; i >= 0; i-- {
-      $$ = cons($2[i], $$)
-    }
+	$$ = vecToList($2)
   }
 | LPAREN list_items DOT datum RPAREN
   {
