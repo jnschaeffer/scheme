@@ -76,7 +76,7 @@ quotation:
   }
 
 datum:
-  simple_datum | compound_datum
+  simple_datum | compound_datum | quotation
 
 simple_datum:
   NUM
@@ -90,7 +90,11 @@ compound_datum:
 | vector
 
 list:
-  LPAREN list_items RPAREN
+  LPAREN RPAREN
+  {
+    $$ = emptyList
+  }
+| LPAREN list_items RPAREN
   {
 	$$ = vecToList($2)
   }

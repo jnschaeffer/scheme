@@ -15,6 +15,7 @@ const (
 	numT
 	vecT
 	charT
+	symT
 	strT
 	bvecT
 	identT
@@ -29,6 +30,7 @@ var typeMap = map[objType]string{
 	vecT:  "vector",
 	charT: "char",
 	strT:  "string",
+	symT: "symbol",
 	bvecT: "b-vector",
 	identT:  "identifier",
 	listT: "list",
@@ -49,7 +51,8 @@ var (
 	isString = isTypeGen(strT)
 	isIdent = isTypeGen(identT)
 	isList = isTypeGen(listT)
-	isProv = isTypeGen(procT)
+	isProc = isTypeGen(procT)
+	isSym = isTypeGen(symT)
 )
 
 var trueObj = &object{
@@ -95,6 +98,7 @@ type list struct {
 }
 
 func (l list) String() string {
+
 	str := fmt.Sprintf("(%s", l.car.String())
 	x := l.cdr
 	for {
@@ -174,7 +178,7 @@ func (o *object) String() string {
 	case identT:
 		return o.v.(string)
 	case strT:
-		return o.v.(string)
+		return fmt.Sprintf("\"%s\"", o.v.(string))
 	case procT:
 		return "#<proc>"
 	default:
@@ -182,7 +186,19 @@ func (o *object) String() string {
 	}
 }
 
-func cons(o1, o2 *object) *object {
+/* PRIMITIVES */
+
+type primitiveProc func(...*object) *object
+
+var primitiveLookup = map[string]primitiveProc{
+	"cons": cons,
+	"car": car,
+	"cdr": cdr,
+}
+
+func cons(args ...*object) *object {
+	o1, o2 := args[0], args[1]
+
 	return &object{
 		t: listT,
 		v: list{
@@ -190,6 +206,18 @@ func cons(o1, o2 *object) *object {
 			cdr: o2,
 		},
 	}
+}
+
+func car(args ...*object) *object {
+	o := args[0]
+
+	return o.v.(list).car
+}
+
+func cdr(args ...*object) *object {
+	o := args[0]
+
+	return o.v.(list).cdr
 }
 
 /* ANALYSIS */
@@ -231,16 +259,35 @@ var (
 	isIf = isTaggedListGen("if")
 )
 
+func isTrue(o *object) bool {
+	return !(o.t == boolT && o.v.(bool) == false)
+}
+
+func ifExprs(o *object) (*object, *object, *object) {
+	var pred, conseq, alt *object
+
+	args := o.v.(list).cdr
+	argv := listToVec(args)
+
+	pred, conseq = argv[0], argv[1]
+	if len(argv) == 3 {
+		alt = argv[2]
+	}
+
+	return pred, conseq, alt
+}
+
+func isApplication(o *object) bool {
+	return isList(o) && isProc(car(o))
+}
+
 /* EVALUATION */
 
 func evalQuote(o *object, e *env) *object {
-	args := o.v.(list).cdr
-	arg := args.v.(list).car
+	args := cdr(o)
+	arg := car(args)
 
-	ret := &object{
-		t: strT,
-		v: arg.String(),
-	}
+	ret := arg
 
 	return ret
 }
@@ -273,22 +320,12 @@ func evalAssignment(o *object, e *env) *object {
 	return evaled
 }
 
-func isTrue(o *object) bool {
-	return !(o.t == boolT && o.v.(bool) == false)
-}
+func evalPrimitive(o *object, e *env) *object {
+	// argv := listToVec(cdr(o))
 
-func ifExprs(o *object) (*object, *object, *object) {
-	var pred, conseq, alt *object
+	// proc, params := argv[0], argv[1:]
 
-	args := o.v.(list).cdr
-	argv := listToVec(args)
-
-	pred, conseq = argv[0], argv[1]
-	if len(argv) == 3 {
-		alt = argv[2]
-	}
-
-	return pred, conseq, alt
+	return nil
 }
 
 func eval(o *object, e *env) *object {
@@ -309,13 +346,28 @@ Tailcall:
 		return evalAssignment(o, e)
 	case isIf(o):
 		pred, conseq, alt := ifExprs(o)
-		if isTrue(pred) {
-			o = conseq
+		if isTrue(eval(pred, e)) {
+			o = eval(conseq, e)
 		} else {
-			o = alt
+			o = eval(alt, e)
 		}
 
 		goto Tailcall
+	case isList(o):
+		args := listToVec(cdr(o))
+		name := car(o).v.(string)
+		p, ok := primitiveLookup[name]
+		if !ok {
+			log.Printf("ERROR: unknown procedure %s", name)
+		}
+
+		for i, a := range args {
+			args[i] = eval(a, e)
+		}
+
+		r := p(args...)
+
+		return r
 	}
 
 	log.Printf("ERROR: unknown statement %s", o.String())

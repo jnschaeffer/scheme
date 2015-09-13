@@ -59,10 +59,10 @@ func lexStart(l *lexer) stateFn {
 			l.emit(COMMA)
 		}
 		return lexStart
-	case r == '.':
+	case r == '.' && !unicode.IsDigit(l.peek()):
 		l.emit(DOT)
 		return lexStart
-	case r == '+' || r == '-' || ('0' <= r && r <= '9'):
+	case r == '.' || r == '+' || r == '-' || ('0' <= r && r <= '9'):
 		l.backup()
 		return lexNumber
 	case r == '"':
