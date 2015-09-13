@@ -2,10 +2,10 @@ package lang
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"log"
 	"os"
-	"fmt"
 )
 
 type objType int
@@ -21,20 +21,20 @@ const (
 	identT
 	listT
 	procT
-	builtinT
+	primitiveT
 )
 
 var typeMap = map[objType]string{
-	boolT: "bool",
-	numT:  "num",
-	vecT:  "vector",
-	charT: "char",
-	strT:  "string",
-	symT: "symbol",
-	bvecT: "b-vector",
-	identT:  "identifier",
-	listT: "list",
-	procT: "procedure",
+	boolT:  "bool",
+	numT:   "num",
+	vecT:   "vector",
+	charT:  "char",
+	strT:   "string",
+	symT:   "symbol",
+	bvecT:  "b-vector",
+	identT: "identifier",
+	listT:  "list",
+	procT:  "procedure",
 }
 
 func isTypeGen(t objType) func(o *object) bool {
@@ -44,15 +44,16 @@ func isTypeGen(t objType) func(o *object) bool {
 }
 
 var (
-	isBool = isTypeGen(boolT)
-	isNum = isTypeGen(numT)
-	isVec = isTypeGen(vecT)
-	isChar = isTypeGen(charT)
-	isString = isTypeGen(strT)
-	isIdent = isTypeGen(identT)
-	isList = isTypeGen(listT)
-	isProc = isTypeGen(procT)
-	isSym = isTypeGen(symT)
+	isBool      = isTypeGen(boolT)
+	isNum       = isTypeGen(numT)
+	isVec       = isTypeGen(vecT)
+	isChar      = isTypeGen(charT)
+	isString    = isTypeGen(strT)
+	isIdent     = isTypeGen(identT)
+	isList      = isTypeGen(listT)
+	isProc      = isTypeGen(procT)
+	isSym       = isTypeGen(symT)
+	isPrimitive = isTypeGen(primitiveT)
 )
 
 var trueObj = &object{
@@ -92,6 +93,8 @@ func (e *env) set(k string, o *object) *object {
 	return o
 }
 
+/* LIST */
+
 type list struct {
 	car *object
 	cdr *object
@@ -123,7 +126,7 @@ func (l list) String() string {
 func vecToList(objs []*object) *object {
 	l := len(objs)
 	o := emptyList
-	for i := l-1; i >= 0; i-- {
+	for i := l - 1; i >= 0; i-- {
 		o = cons(objs[i], o)
 	}
 
@@ -145,7 +148,9 @@ func listToVec(o *object) []*object {
 
 	return objs
 }
-	
+
+/* OBJECT */
+
 type object struct {
 	t objType
 	v interface{}
@@ -167,7 +172,7 @@ func (o *object) String() string {
 			return "#f"
 		}
 	case numT:
-		return fmt.Sprintf("%s", o.v)
+		return fmt.Sprintf("%d", o.v)
 	case listT:
 		if o.v == nil {
 			return "()"
@@ -180,20 +185,28 @@ func (o *object) String() string {
 	case strT:
 		return fmt.Sprintf("\"%s\"", o.v.(string))
 	case procT:
-		return "#<proc>"
+		return fmt.Sprintf("#<proc>")
 	default:
 		return fmt.Sprintf("%s: %#v", typeMap[o.t], o.v)
 	}
+}
+
+/* PROCEDURE */
+
+type compoundProc struct {
+	params []string
+	body   []*object
 }
 
 /* PRIMITIVES */
 
 type primitiveProc func(...*object) *object
 
-var primitiveLookup = map[string]primitiveProc{
-	"cons": cons,
-	"car": car,
-	"cdr": cdr,
+func procGen(p primitiveProc) *object {
+	return &object{
+		t: primitiveT,
+		v: p,
+	}
 }
 
 func cons(args ...*object) *object {
@@ -220,12 +233,54 @@ func cdr(args ...*object) *object {
 	return o.v.(list).cdr
 }
 
+func empty(args ...*object) *object {
+	o := args[0]
+
+	result := isList(o) && o.v == nil
+
+	return &object{
+		t: boolT,
+		v: result,
+	}
+}
+
+type binaryOp func(*object, *object) *object
+
+func foldGen(f binaryOp) primitiveProc {
+	return func(o ...*object) *object {
+		initial := o[0]
+		rest := o[1:]
+
+		for _, r := range rest {
+			initial = f(initial, r)
+			if initial == nil {
+				return nil
+			}
+		}
+
+		return initial
+	}
+}
+
+func add(initial *object, val *object) *object {
+	if !isNum(initial) || !isNum(val) {
+		return nil
+	}
+
+	a, b := initial.v.(int), val.v.(int)
+
+	return &object{
+		t: numT,
+		v: a + b,
+	}
+}
+
 /* ANALYSIS */
 func isSelfEvaluating(o *object) bool {
 	types := []objType{boolT, numT, vecT, charT, strT, bvecT}
 
 	res := false
-	for _, t := range types{
+	for _, t := range types {
 		if o.t == t {
 			res = true
 		}
@@ -252,11 +307,11 @@ func isTaggedListGen(tag string) func(o *object) bool {
 }
 
 var (
-	isQuoted = isTaggedListGen("quote")
+	isQuoted     = isTaggedListGen("quote")
 	isAssignment = isTaggedListGen("set!")
 	isDefinition = isTaggedListGen("define")
-	isLambda = isTaggedListGen("lambda")
-	isIf = isTaggedListGen("if")
+	isLambda     = isTaggedListGen("lambda")
+	isIf         = isTaggedListGen("if")
 )
 
 func isTrue(o *object) bool {
@@ -282,6 +337,19 @@ func isApplication(o *object) bool {
 }
 
 /* EVALUATION */
+
+func extendEnv(params []string, vals []*object, e *env) *env {
+	m := make(map[string]*object, len(params))
+
+	for i := range params {
+		m[params[i]] = vals[i]
+	}
+
+	return &env{
+		m:     m,
+		outer: e,
+	}
+}
 
 func evalQuote(o *object, e *env) *object {
 	args := cdr(o)
@@ -320,12 +388,14 @@ func evalAssignment(o *object, e *env) *object {
 	return evaled
 }
 
-func evalPrimitive(o *object, e *env) *object {
-	// argv := listToVec(cdr(o))
+func evalPrimitive(p primitiveProc, args []*object, e *env) *object {
+	for i, a := range args {
+		args[i] = eval(a, e)
+	}
 
-	// proc, params := argv[0], argv[1:]
+	r := p(args...)
 
-	return nil
+	return r
 }
 
 func eval(o *object, e *env) *object {
@@ -347,27 +417,69 @@ Tailcall:
 	case isIf(o):
 		pred, conseq, alt := ifExprs(o)
 		if isTrue(eval(pred, e)) {
-			o = eval(conseq, e)
+			o = conseq
 		} else {
-			o = eval(alt, e)
+			o = alt
 		}
 
 		goto Tailcall
+	case isLambda(o):
+		paramObjs := listToVec(car(cdr(o)))
+		paramStrs := make([]string, len(paramObjs))
+		for i, p := range paramObjs {
+			if !isIdent(p) {
+				log.Printf("invalid parameter value %s", p)
+				return nil
+			}
+
+			paramStrs[i] = p.v.(string)
+		}
+
+		body := listToVec(cdr(cdr(o)))
+
+		proc := compoundProc{
+			params: paramStrs,
+			body:   body,
+		}
+
+		return &object{
+			t: procT,
+			v: proc,
+		}
 	case isList(o):
 		args := listToVec(cdr(o))
-		name := car(o).v.(string)
-		p, ok := primitiveLookup[name]
-		if !ok {
-			log.Printf("ERROR: unknown procedure %s", name)
-		}
+		op := eval(car(o), e)
 
 		for i, a := range args {
 			args[i] = eval(a, e)
 		}
 
-		r := p(args...)
+		if isPrimitive(op) {
+			return op.v.(primitiveProc)(args...)
+		}
 
-		return r
+		if !isProc(op) {
+			log.Printf("unknown procedure")
+			return nil
+		}
+
+		proc := op.v.(compoundProc)
+
+		if len(proc.params) != len(args) {
+			log.Printf("argument length mismatch: %d != %d", len(proc.params), len(args))
+			return nil
+		}
+
+		e = extendEnv(proc.params, args, e)
+
+		body := proc.body
+		for i := 0; i < len(body)-1; i++ {
+			eval(body[i], e)
+		}
+
+		o = body[len(body)-1]
+
+		goto Tailcall
 	}
 
 	log.Printf("ERROR: unknown statement %s", o.String())
@@ -379,10 +491,18 @@ func write(o *object) {
 	fmt.Printf("%s\n", o)
 }
 
+var globalEnvMap = map[string]*object{
+	"cons":   procGen(cons),
+	"car":    procGen(car),
+	"cdr":    procGen(cdr),
+	"empty?": procGen(empty),
+	"+":      procGen(foldGen(add)),
+}
+
 func REPL() {
 	input := bufio.NewReader(os.Stdin)
 	e := &env{
-		m: map[string]*object{},
+		m:     globalEnvMap,
 		outer: nil,
 	}
 	for {

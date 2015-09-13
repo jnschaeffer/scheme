@@ -4,6 +4,7 @@
   import (
     "log"
     "strings"
+	"strconv"
   )
 
   var emptyList = &object{
@@ -45,7 +46,7 @@ expr:
 procedure:
   LPAREN exprs RPAREN
   {
-    $$ = vecToList($2)
+	$$ = vecToList($2)
   }
 
 exprs:
@@ -148,9 +149,10 @@ func (x *exprLex) Lex(yylval *exprSymType) int {
 
   switch item.t {
   case NUM:
+	n, _ := strconv.Atoi(item.input)
     yylval.obj = &object{
       t: numT,
-      v: item.input,
+      v: n,
     }
 
     return NUM

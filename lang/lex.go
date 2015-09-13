@@ -62,6 +62,9 @@ func lexStart(l *lexer) stateFn {
 	case r == '.' && !unicode.IsDigit(l.peek()):
 		l.emit(DOT)
 		return lexStart
+	case r == '+' && !unicode.IsDigit(l.peek()):
+		l.emit(IDENT)
+		return lexStart
 	case r == '.' || r == '+' || r == '-' || ('0' <= r && r <= '9'):
 		l.backup()
 		return lexNumber
