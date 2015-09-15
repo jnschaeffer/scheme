@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 )
 
 type objType int
@@ -22,6 +23,9 @@ const (
 	listT
 	procT
 	primitiveT
+
+	intT
+	realT
 )
 
 var typeMap = map[objType]string{
@@ -56,9 +60,59 @@ var (
 	isPrimitive = isTypeGen(primitiveT)
 )
 
-var trueObj = &object{
-	t: boolT,
-	v: true,
+type number struct {
+	t        objType
+	intVal   int
+	floatVal float64
+}
+
+type numOp func(n1, n2 number) number
+
+func fromString(s string) number {
+	if i, err := strconv.Atoi(s); err == nil {
+		return number{
+			intVal: i,
+		}
+	}
+
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return number{
+			floatVal: f,
+		}
+	}
+
+	return number{}
+}
+
+func applyNumOp(f numOp, n1, n2 number) number {
+	if n1.t > n2.t {
+		n2.t = realT
+		n2.floatVal = float64(n2.intVal)
+	}
+
+	if n2.t > n1.t {
+		n1.t = realT
+		n1.floatVal = float64(n1.intVal)
+	}
+
+	return f(n1, n2)
+}
+
+func add(n1, n2 number) number {
+	switch n1.t {
+	case intT:
+		return number{
+			t:      intT,
+			intVal: n1.intVal + n2.intVal,
+		}
+	case realT:
+		return number{
+			t:        realT,
+			floatVal: n1.floatVal + n2.floatVal,
+		}
+	}
+
+	panic("unknown number type")
 }
 
 type env struct {
@@ -172,7 +226,7 @@ func (o *object) String() string {
 			return "#f"
 		}
 	case numT:
-		return fmt.Sprintf("%d", o.v)
+		return fmt.Sprintf("%f", o.v)
 	case listT:
 		if o.v == nil {
 			return "()"
@@ -259,19 +313,6 @@ func foldGen(f binaryOp) primitiveProc {
 		}
 
 		return initial
-	}
-}
-
-func add(initial *object, val *object) *object {
-	if !isNum(initial) || !isNum(val) {
-		return nil
-	}
-
-	a, b := initial.v.(int), val.v.(int)
-
-	return &object{
-		t: numT,
-		v: a + b,
 	}
 }
 
@@ -496,7 +537,6 @@ var globalEnvMap = map[string]*object{
 	"car":    procGen(car),
 	"cdr":    procGen(cdr),
 	"empty?": procGen(empty),
-	"+":      procGen(foldGen(add)),
 }
 
 func REPL() {

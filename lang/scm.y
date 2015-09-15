@@ -149,7 +149,7 @@ func (x *exprLex) Lex(yylval *exprSymType) int {
 
   switch item.t {
   case NUM:
-	n, _ := strconv.Atoi(item.input)
+	n, _ := strconv.ParseFloat(item.input, 64)
     yylval.obj = &object{
       t: numT,
       v: n,
