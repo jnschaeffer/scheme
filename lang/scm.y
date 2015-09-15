@@ -4,7 +4,6 @@
   import (
     "log"
     "strings"
-	"strconv"
   )
 
   var emptyList = &object{
@@ -149,7 +148,7 @@ func (x *exprLex) Lex(yylval *exprSymType) int {
 
   switch item.t {
   case NUM:
-	n, _ := strconv.ParseFloat(item.input, 64)
+	n := parseNum(item.input)
     yylval.obj = &object{
       t: numT,
       v: n,

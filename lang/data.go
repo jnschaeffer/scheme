@@ -7,9 +7,14 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type objType int
+
+func (t objType) String() string {
+	return typeMap[t]
+}
 
 const (
 	boolT objType = iota
@@ -23,6 +28,7 @@ const (
 	listT
 	procT
 	primitiveT
+	errorT
 
 	intT
 	realT
@@ -39,11 +45,16 @@ var typeMap = map[objType]string{
 	identT: "identifier",
 	listT:  "list",
 	procT:  "procedure",
+	errorT: "error",
+}
+
+func typeMismatch(exp, obs objType) error {
+	return fmt.Errorf("type mismatch: expected %s, got %s", exp, obs)
 }
 
 func isTypeGen(t objType) func(o *object) bool {
 	return func(o *object) bool {
-		return o.t == t
+		return o != nil && o.t == t
 	}
 }
 
@@ -66,17 +77,30 @@ type number struct {
 	floatVal float64
 }
 
+func (n number) String() string {
+	switch n.t {
+	case intT:
+		return fmt.Sprintf("%d", n.intVal)
+	case realT:
+		return fmt.Sprintf("%f", n.floatVal)
+	default:
+		return "?"
+	}
+}
+
 type numOp func(n1, n2 number) number
 
-func fromString(s string) number {
+func parseNum(s string) number {
 	if i, err := strconv.Atoi(s); err == nil {
 		return number{
+			t:      intT,
 			intVal: i,
 		}
 	}
 
 	if f, err := strconv.ParseFloat(s, 64); err == nil {
 		return number{
+			t:        realT,
 			floatVal: f,
 		}
 	}
@@ -217,6 +241,13 @@ func symbolObj(s string) *object {
 	}
 }
 
+func boolObj(b bool) *object {
+	return &object{
+		t: boolT,
+		v: b,
+	}
+}
+
 func (o *object) String() string {
 	switch o.t {
 	case boolT:
@@ -226,7 +257,7 @@ func (o *object) String() string {
 			return "#f"
 		}
 	case numT:
-		return fmt.Sprintf("%f", o.v)
+		return o.v.(number).String()
 	case listT:
 		if o.v == nil {
 			return "()"
@@ -250,73 +281,139 @@ func (o *object) String() string {
 type compoundProc struct {
 	params []string
 	body   []*object
+	nArgs  int
 }
 
 /* PRIMITIVES */
 
-type primitiveProc func(...*object) *object
+type primitiveFunc func(...*object) (*object, error)
 
-func procGen(p primitiveProc) *object {
+type primitiveProc struct {
+	f     primitiveFunc
+	nArgs int
+}
+
+func procGen(f primitiveFunc, nArgs int) *object {
+	p := primitiveProc{
+		f:     f,
+		nArgs: nArgs,
+	}
+
 	return &object{
 		t: primitiveT,
 		v: p,
 	}
 }
 
-func cons(args ...*object) *object {
-	o1, o2 := args[0], args[1]
+func cons(o1, o2 *object) *object {
 
-	return &object{
+	r := &object{
 		t: listT,
 		v: list{
 			car: o1,
 			cdr: o2,
 		},
 	}
+
+	return r
 }
 
-func car(args ...*object) *object {
-	o := args[0]
-
-	return o.v.(list).car
+func consPrimitive(args ...*object) (*object, error) {
+	return cons(args[0], args[1]), nil
 }
 
-func cdr(args ...*object) *object {
+func car(args ...*object) (*object, error) {
 	o := args[0]
-
-	return o.v.(list).cdr
-}
-
-func empty(args ...*object) *object {
-	o := args[0]
-
-	result := isList(o) && o.v == nil
-
-	return &object{
-		t: boolT,
-		v: result,
+	if !isList(o) {
+		return nil, typeMismatch(listT, o.t)
 	}
+
+	if o.v == nil {
+		return nil, fmt.Errorf("empty list")
+	}
+
+	return o.v.(list).car, nil
 }
 
-type binaryOp func(*object, *object) *object
+func cdr(args ...*object) (*object, error) {
+	o := args[0]
+	if !isList(o) {
+		return nil, typeMismatch(listT, o.t)
+	}
 
-func foldGen(f binaryOp) primitiveProc {
-	return func(o ...*object) *object {
-		initial := o[0]
-		rest := o[1:]
+	if o.v == nil {
+		return nil, fmt.Errorf("reached empty list")
+	}
 
-		for _, r := range rest {
-			initial = f(initial, r)
-			if initial == nil {
-				return nil
+	return o.v.(list).cdr, nil
+}
+
+func cdxr(depth int) primitiveFunc {
+	return func(args ...*object) (*object, error) {
+		o := args[0]
+		var err error
+		for i := 0; i < depth; i++ {
+			o, err = cdr(o)
+			if err != nil {
+				return nil, err
 			}
 		}
 
-		return initial
+		return o, nil
 	}
 }
 
+var (
+	cddr  = cdxr(2)
+	cdddr = cdxr(3)
+)
+
+func cadxr(depth int) primitiveFunc {
+	f := cdxr(depth)
+	return func(args ...*object) (*object, error) {
+		o := args[0]
+		o, err := f(o)
+		if err != nil {
+			return nil, err
+		}
+
+		return car(o)
+	}
+}
+
+var (
+	caddr  = cadxr(2)
+	cadddr = cadxr(3)
+)
+
+func cadr(args ...*object) (*object, error) {
+	o := args[0]
+	o, err := cdr(o)
+	if err != nil {
+		return nil, err
+	}
+
+	return car(o)
+}
+
+func eq(args ...*object) (*object, error) {
+	o1, o2 := args[0], args[1]
+
+	if o1.t != o2.t || o1.v != o2.v {
+		return boolObj(false), nil
+	}
+
+	return boolObj(true), nil
+}
+
+func quit(args ...*object) (*object, error) {
+	os.Exit(0)
+
+	return nil, nil
+}
+
 /* ANALYSIS */
+
 func isSelfEvaluating(o *object) bool {
 	types := []objType{boolT, numT, vecT, charT, strT, bvecT}
 
@@ -374,7 +471,8 @@ func ifExprs(o *object) (*object, *object, *object) {
 }
 
 func isApplication(o *object) bool {
-	return isList(o) && isProc(car(o))
+	p, _ := car(o)
+	return isList(o) && isProc(p)
 }
 
 /* EVALUATION */
@@ -392,63 +490,73 @@ func extendEnv(params []string, vals []*object, e *env) *env {
 	}
 }
 
-func evalQuote(o *object, e *env) *object {
-	args := cdr(o)
-	arg := car(args)
+func evalQuote(o *object, e *env) (*object, error) {
+	args, _ := cdr(o)
 
-	ret := arg
+	ret, _ := car(args)
 
-	return ret
+	return ret, nil
 }
 
-func evalDefine(o *object, e *env) *object {
-	args := o.v.(list).cdr
+func evalDefine(o *object, e *env) (*object, error) {
+	args, _ := cdr(o)
 	argv := listToVec(args)
 
 	id, expr := argv[0], argv[1]
 
 	idStr := id.v.(string)
-	evaled := eval(expr, e)
+	evaled, err := eval(expr, e)
+	if err != nil {
+		return nil, err
+	}
 
 	e.m[idStr] = evaled
 
-	return evaled
+	return evaled, nil
 }
 
-func evalAssignment(o *object, e *env) *object {
+func evalAssignment(o *object, e *env) (*object, error) {
 	args := o.v.(list).cdr
 	argv := listToVec(args)
 
 	id, expr := argv[0], argv[1]
 
 	idStr := id.v.(string)
-	evaled := eval(expr, e)
+	evaled, err := eval(expr, e)
+	if err != nil {
+		return nil, err
+	}
 
 	e.set(idStr, evaled)
 
-	return evaled
+	return evaled, nil
 }
 
-func evalPrimitive(p primitiveProc, args []*object, e *env) *object {
-	for i, a := range args {
-		args[i] = eval(a, e)
+func evalPrimitive(p primitiveProc, args []*object, e *env) (*object, error) {
+	if p.nArgs != len(args) {
+		err := fmt.Errorf("argument length mismatch: %d != %d", p.nArgs, len(args))
+		return nil, err
 	}
 
-	r := p(args...)
+	r, err := p.f(args...)
 
-	return r
+	return r, err
 }
 
-func eval(o *object, e *env) *object {
+func eval(o *object, e *env) (*object, error) {
 
 Tailcall:
 	switch {
 	case o == nil:
-		return nil
+		return nil, nil
 	case isSelfEvaluating(o):
-		return o
+		return o, nil
 	case o.t == identT:
-		return e.lookup(o.v.(string))
+		ret := e.lookup(o.v.(string))
+		if ret == nil {
+			return nil, fmt.Errorf("unknown identifier %s", o)
+		}
+		return ret, nil
 	case isQuoted(o):
 		return evalQuote(o, e)
 	case isDefinition(o):
@@ -457,7 +565,11 @@ Tailcall:
 		return evalAssignment(o, e)
 	case isIf(o):
 		pred, conseq, alt := ifExprs(o)
-		if isTrue(eval(pred, e)) {
+		evaledPred, err := eval(pred, e)
+		if err != nil {
+			return nil, err
+		}
+		if isTrue(evaledPred) {
 			o = conseq
 		} else {
 			o = alt
@@ -465,57 +577,85 @@ Tailcall:
 
 		goto Tailcall
 	case isLambda(o):
-		paramObjs := listToVec(car(cdr(o)))
+		params, err := cadr(o)
+		if err != nil {
+			return nil, err
+		}
+		paramObjs := listToVec(params)
 		paramStrs := make([]string, len(paramObjs))
 		for i, p := range paramObjs {
 			if !isIdent(p) {
-				log.Printf("invalid parameter value %s", p)
-				return nil
+				return nil, fmt.Errorf("invalid parameter value %s", p)
 			}
 
 			paramStrs[i] = p.v.(string)
 		}
 
-		body := listToVec(cdr(cdr(o)))
+		bodyList, err := cddr(o)
+		if err != nil {
+			return nil, err
+		}
+
+		body := listToVec(bodyList)
 
 		proc := compoundProc{
 			params: paramStrs,
 			body:   body,
+			nArgs:  len(paramStrs),
 		}
 
-		return &object{
+		ret := &object{
 			t: procT,
 			v: proc,
 		}
-	case isList(o):
-		args := listToVec(cdr(o))
-		op := eval(car(o), e)
 
-		for i, a := range args {
-			args[i] = eval(a, e)
+		return ret, nil
+
+	case isList(o):
+		args, _ := cdr(o)
+		argv := listToVec(args)
+		op, _ := car(o)
+		op, err := eval(op, e)
+		if err != nil {
+			return nil, err
+		}
+
+		for i, a := range argv {
+			argv[i], err = eval(a, e)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		if isPrimitive(op) {
-			return op.v.(primitiveProc)(args...)
+			p := op.v.(primitiveProc)
+			r, err := evalPrimitive(p, argv, e)
+			if err != nil {
+				return nil, err
+			}
+
+			return r, nil
 		}
 
 		if !isProc(op) {
-			log.Printf("unknown procedure")
-			return nil
+			return nil, typeMismatch(procT, op.t)
 		}
 
 		proc := op.v.(compoundProc)
 
-		if len(proc.params) != len(args) {
-			log.Printf("argument length mismatch: %d != %d", len(proc.params), len(args))
-			return nil
+		if proc.nArgs != len(argv) {
+			err = fmt.Errorf("argument length mismatch: %d != %d", len(proc.params), len(argv))
+			return nil, err
 		}
 
-		e = extendEnv(proc.params, args, e)
+		e = extendEnv(proc.params, argv, e)
 
 		body := proc.body
 		for i := 0; i < len(body)-1; i++ {
-			eval(body[i], e)
+			_, err = eval(body[i], e)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		o = body[len(body)-1]
@@ -523,20 +663,62 @@ Tailcall:
 		goto Tailcall
 	}
 
-	log.Printf("ERROR: unknown statement %s", o.String())
-
-	return nil
-}
-
-func write(o *object) {
-	fmt.Printf("%s\n", o)
+	return nil, fmt.Errorf("unknown statement %s", o)
 }
 
 var globalEnvMap = map[string]*object{
-	"cons":   procGen(cons),
-	"car":    procGen(car),
-	"cdr":    procGen(cdr),
-	"empty?": procGen(empty),
+	"cons":   procGen(consPrimitive, 2),
+	"car":    procGen(car, 1),
+	"cdr":    procGen(cdr, 1),
+	"cddr":   procGen(cddr, 1),
+	"cdddr":  procGen(cdddr, 1),
+	"cadr":   procGen(cadr, 1),
+	"caddr":  procGen(caddr, 1),
+	"cadddr": procGen(cadddr, 1),
+	"eq?":    procGen(eq, 2),
+	"quit":   procGen(quit, 0),
+}
+
+func collectInput(r *bufio.Reader) (string, error) {
+	var stmt []byte
+
+	leftCnt := 0
+	rightCnt := 0
+
+	for {
+		prompt := "> "
+		if leftCnt > 0 {
+			prompt = "  " + strings.Repeat("  ", leftCnt - rightCnt)
+		}
+
+		if _, err := os.Stdout.WriteString(prompt); err != nil {
+			log.Fatal(err)
+		}
+		line, err := r.ReadBytes('\n')
+		if err == io.EOF {
+			return "", err
+		}
+
+		for _, b := range line {
+			if b == '(' {
+				leftCnt++
+			}
+
+			if b == ')' {
+				rightCnt++
+			}
+		}
+
+		if leftCnt < rightCnt {
+			return "", fmt.Errorf("mismatched parentheses")
+		}
+
+		stmt = append(stmt, line...)
+
+		if leftCnt == rightCnt {
+			return string(stmt), nil
+		}
+	}
 }
 
 func REPL() {
@@ -546,18 +728,20 @@ func REPL() {
 		outer: nil,
 	}
 	for {
-		if _, err := os.Stdout.WriteString("> "); err != nil {
-			log.Fatalf("WriteString: %s", err)
-		}
-		line, err := input.ReadBytes('\n')
+		line, err := collectInput(input)
 		if err == io.EOF {
 			return
 		}
-
 		if err != nil {
-			log.Fatalf("ReadBytes: %s", err)
+			fmt.Printf("ERROR: %s\n", err)
+			continue
 		}
 
-		write(eval(parse(string(line)), e))
+		o, err := eval(parse(line), e)
+		if err != nil {
+			fmt.Printf("ERROR: %s\n", err)
+		} else {
+			fmt.Printf("%s\n", o)
+		}
 	}
 }
