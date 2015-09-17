@@ -455,13 +455,15 @@ func isTaggedListGen(tag string) func(o *object) bool {
 }
 
 var (
-	isQuasiquoted = isTaggedListGen("quasiquote")
-	isQuoted      = isTaggedListGen("quote")
-	isAssignment  = isTaggedListGen("set!")
-	isDefinition  = isTaggedListGen("define")
-	isLambda      = isTaggedListGen("lambda")
-	isIf          = isTaggedListGen("if")
-	isUnquoted    = isTaggedListGen("unquote")
+	isQuasiquoted      = isTaggedListGen("quasiquote")
+	isQuoted           = isTaggedListGen("quote")
+	isAssignment       = isTaggedListGen("set!")
+	isDefinition       = isTaggedListGen("define")
+	isLambda           = isTaggedListGen("lambda")
+	isIf               = isTaggedListGen("if")
+	isUnquoted         = isTaggedListGen("unquote")
+	isSplicingUnquoted = isTaggedListGen("unquote-splicing")
+	isSyntaxDefinition = isTaggedListGen("define-syntax")
 )
 
 func isTrue(o *object) bool {
@@ -487,6 +489,80 @@ func isApplication(o *object) bool {
 	return isList(o) && isProc(p)
 }
 
+/* EXPANSION */
+
+func applyMacro(m *object, argv []*object, e *env) (*object, error) {
+	log.Printf("applying %s", m.v)
+	p := m.v.(compoundProc)
+	expr := p.body[0]
+
+	if p.nArgs != len(argv) {
+		return nil, fmt.Errorf("expand: %d != %d", p.nArgs, len(argv))
+	}
+
+	f := extendEnv(p.params, argv, e)
+
+	return eval(expr, f)
+}
+
+func expand(o *object, e *env) (*object, error) {
+	if !(isList(o) && !isEmptyList(o)) {
+		return o, nil
+	}
+
+	p := o
+	head, _ := car(o)
+	tail, _ := cdr(o)
+	done := false
+
+	if isIdent(head) {
+		m := e.lookup(head.v.(string))
+
+		if m != nil && isMacro(m) {
+			log.Printf("found macro %s", head.String())
+			argv := listToVec(tail)
+			log.Printf("expanding %s", o.String())
+
+			r, err := applyMacro(m, argv, e)
+
+			if err != nil {
+				log.Printf("MACRO ERROR")
+				return nil, err
+			}
+
+			log.Printf("expanded to %s", r.String())
+
+			return expand(r, e)
+		}
+	}
+
+	for !done {
+		if isList(head) {
+			log.Printf("expanding list")
+			r, err := expand(head, e)
+			if err != nil {
+				return nil, err
+			}
+
+			p.v.(*list).car = r
+		}
+
+		switch {
+		case !isList(tail):
+			head = tail
+			tail = emptyList
+		case isEmptyList(tail):
+			done = true
+		default:
+			p = tail
+			head, _ = car(tail)
+			tail, _ = cdr(tail)
+		}
+	}
+
+	return o, nil
+}
+
 /* EVALUATION */
 
 func extendEnv(params []string, vals []*object, e *env) *env {
@@ -509,15 +585,27 @@ func evalQuote(o *object, e *env) (*object, error) {
 
 	return ret, nil
 }
-
+	
 func evalDefine(o *object, e *env) (*object, error) {
-	args, _ := cdr(o)
-	argv := listToVec(args)
+	first, _ := cadr(o)
+	body, _ := cddr(o)
+	
+	var id *object
 
-	id, expr := argv[0], argv[1]
+	// working with lambda - rewrite and evaluate
+	if isList(first) {
+		id, _ = car(first)
+		params, _ := cdr(first)
+
+		body = cons(symbolObj("lambda"),
+			cons(params, body))
+	} else {
+		id = first
+		body, _ = car(body)
+	}
 
 	idStr := id.v.(string)
-	evaled, err := eval(expr, e)
+	evaled, err := eval(body, e)
 	if err != nil {
 		return nil, err
 	}
@@ -555,6 +643,38 @@ func evalPrimitive(p primitiveProc, args []*object, e *env) (*object, error) {
 	return r, err
 }
 
+func evalSyntaxDefinition(o *object, e *env) (*object, error) {
+	args, _ := cdr(o)
+	argv := listToVec(args)
+	if len(argv) != 2 {
+		return nil, fmt.Errorf("argument length mismatch: %d != %d", 2, len(argv))
+	}
+
+	id, p := argv[0], argv[1]
+
+	p, err := eval(p, e)
+	if err != nil {
+		return nil, err
+	}
+
+	if !isIdent(id) {
+		return nil, typeMismatch(identT, id.t)
+	}
+
+	if !isProc(p) {
+		return nil, typeMismatch(procT, p.t)
+	}
+
+	m := &object{
+		t: macroT,
+		v: p.v,
+	}
+
+	e.m[id.v.(string)] = m
+
+	return m, nil
+}
+
 func evalUnquote(o *object, e *env, level int) (*object, error) {
 	switch {
 	case level < 0:
@@ -570,10 +690,21 @@ func evalUnquote(o *object, e *env, level int) (*object, error) {
 			return nil, err
 		}
 
-		result := cons(symbolObj("unquote"), cons(d, emptyList))
+		head, _ := car(o)
+		result := cons(head, cons(d, emptyList))
 
 		return result, nil
 	}
+}
+
+func evalSplicingUnquote(o *object, e *env, level int) (*object, error) {
+	body, _ := cadr(o)
+
+	if !isList(body) {
+		return nil, typeMismatch(listT, body.t)
+	}
+
+	return evalUnquote(o, e, level)
 }
 
 func evalQuasiquote(o *object, e *env, level int) (*object, error) {
@@ -600,9 +731,10 @@ func evalQuasiquote(o *object, e *env, level int) (*object, error) {
 		if err != nil {
 			return nil, err
 		}
-		q.v.(*list).cdr.v.(*list).car = p
+		result := cons(symbolObj("quasiquote"), cons(p, emptyList))
+
 		log.Printf("returning %s", q.String())
-		return q, nil
+		return result, nil
 
 	case isUnquoted(q):
 		log.Printf("decreasing to level %d", level-1)
@@ -611,23 +743,48 @@ func evalQuasiquote(o *object, e *env, level int) (*object, error) {
 			return nil, err
 		}
 		return p, nil
-
+	
 	case isList(q):
 		log.Printf("evaluating list")
-		for !isEmptyList(q) {
-			v, _ := car(q)
-			p, err := evalQuasiquote(v, e, level)
-			if err != nil {
-				return nil, err
+		vec := listToVec(q)
+		var result []*object
+		for _, v := range vec {
+			// special case for unquote-splicing
+			if isSplicingUnquoted(v) {
+				p, err := evalSplicingUnquote(v, e, level-1)
+				if err != nil {
+					return nil, err
+				}
+				r := listToVec(p)
+
+				result = append(result, r...)
+			} else {
+				p, err := evalQuasiquote(v, e, level)
+				if err != nil {
+					return nil, err
+				}
+
+				result = append(result, p)
 			}
-			q.v.(*list).car = p
-			q, _ = cdr(q)
 		}
 
-		return o, nil
+		return vecToList(result), nil
 	}
 
 	return nil, fmt.Errorf("how did we get here?")
+}
+
+func evalVector(objs []*object, e *env) ([]*object, error) {
+	ret := make([]*object, len(objs))
+	for i, a := range objs {
+		r, err := eval(a, e)
+		if err != nil {
+			return nil, err
+		}
+		ret[i] = r
+	}
+
+	return ret, nil
 }
 
 func eval(o *object, e *env) (*object, error) {
@@ -651,6 +808,8 @@ Tailcall:
 		return evalQuote(o, e)
 	case isDefinition(o):
 		return evalDefine(o, e)
+	case isSyntaxDefinition(o):
+		return evalSyntaxDefinition(o, e)
 	case isAssignment(o):
 		return evalAssignment(o, e)
 	case isIf(o):
@@ -711,14 +870,12 @@ Tailcall:
 			return nil, err
 		}
 
-		for i, a := range argv {
-			argv[i], err = eval(a, e)
+		if isPrimitive(op) {
+			argv, err = evalVector(argv, e)
 			if err != nil {
 				return nil, err
 			}
-		}
 
-		if isPrimitive(op) {
 			p := op.v.(primitiveProc)
 			r, err := evalPrimitive(p, argv, e)
 			if err != nil {
@@ -730,6 +887,11 @@ Tailcall:
 
 		if !isProc(op) {
 			return nil, typeMismatch(procT, op.t)
+		}
+
+		argv, err = evalVector(argv, e)
+		if err != nil {
+			return nil, err
 		}
 
 		proc := op.v.(compoundProc)
@@ -828,7 +990,19 @@ func REPL() {
 			continue
 		}
 
-		o, err := eval(parse(line), e)
+		p, err := parse(line)
+		if err != nil {
+			fmt.Printf("PARSE: %s\n", err)
+			continue
+		}
+
+		p, err = expand(p, e)
+		if err != nil {
+			fmt.Printf("EXPAND: %s\n", err)
+			continue
+		}
+
+		o, err := eval(p, e)
 		if err != nil {
 			fmt.Printf("ERROR: %s\n", err)
 		} else {

@@ -54,6 +54,7 @@ func lexStart(l *lexer) stateFn {
 		return lexStart
 	case r == ',':
 		if l.peek() == '@' {
+			l.next()
 			l.emit(COMMAAT)
 		} else {
 			l.emit(COMMA)

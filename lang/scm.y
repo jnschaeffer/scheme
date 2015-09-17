@@ -2,6 +2,7 @@
   package lang
 
   import (
+    "fmt"
     "log"
     "strings"
   )
@@ -26,7 +27,8 @@
 %type <obj> datum simple_datum compound_datum list vector expr quotation
 %type <obj> literal self_evaluating procedure
 %type <obj> quasiquote qq_template list_qq_template unquote derived
-%type <objs> list_items exprs qq_templates
+%type <obj> qq_template_or_splice splicing_unquotation
+%type <objs> list_items exprs qq_templates_or_splices
 
 %start start
 
@@ -82,12 +84,16 @@ qq_template:
 | list_qq_template
 | unquote
 
-qq_templates:
+qq_template_or_splice:
   qq_template
+| splicing_unquotation
+
+qq_templates_or_splices:
+  qq_template_or_splice
   {
     $$ = []*object{$1}
   }
-| qq_templates qq_template
+| qq_templates_or_splices qq_template_or_splice
   {
     $$ = append($1, $2)
   }
@@ -98,11 +104,11 @@ list_qq_template:
   {
     $$ = emptyList
   }
-|  LPAREN qq_templates RPAREN
+|  LPAREN qq_templates_or_splices RPAREN
   {
     $$ = vecToList($2)
   }
-| LPAREN qq_templates DOT qq_template RPAREN
+| LPAREN qq_templates_or_splices DOT qq_template RPAREN
   {
     $$ = $4
     for i := len($2)-1; i >= 0; i-- {
@@ -114,6 +120,12 @@ unquote:
   COMMA qq_template
   {
     $$ = cons(symbolObj("unquote"), cons($2, emptyList))
+  }
+
+splicing_unquotation:
+  COMMAAT qq_template
+  {
+    $$ = cons(symbolObj("unquote-splicing"), cons($2, emptyList))
   }
 
 self_evaluating:
@@ -246,14 +258,16 @@ func (x *exprLex) Lex(yylval *exprSymType) int {
 
 func (x *exprLex) Error(e string) {
   log.Printf("error: %s\n", e)
+  err = fmt.Errorf(e)
 }
 
 var root *object
+var err error
 
-func parse(s string) *object {
+func parse(s string) (*object, error) {
   root = nil
 
   exprParse(&exprLex{lexer: newLexer(s, lexStart)})
 
-  return root
+  return root, err
 }
