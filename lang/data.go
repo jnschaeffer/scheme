@@ -215,6 +215,20 @@ func vecToList(objs []*object) *object {
 	return o
 }
 
+func vecToImproperList(objs []*object) *object {
+	l := len(objs)
+	if l == 0 {
+		return emptyList
+	}
+
+	o := objs[l-1]
+	for i := l-2; i >= 0; i-- {
+		o = cons(objs[i], o)
+	}
+
+	return o
+}
+
 func listToVec(o *object) []*object {
 	var objs []*object
 
@@ -288,6 +302,7 @@ type compoundProc struct {
 	body   []*object
 	nArgs  int
 	e      *env
+	hasTail bool
 }
 
 /* PRIMITIVES */
@@ -496,17 +511,21 @@ func applyMacro(m *object, argv []*object, e *env) (*object, error) {
 	p := m.v.(compoundProc)
 	expr := p.body[0]
 
-	if p.nArgs != len(argv) {
-		return nil, fmt.Errorf("expand: %d != %d", p.nArgs, len(argv))
+	f, err := extendEnv(p.params, argv, p.hasTail, e)
+	if err != nil {
+		return nil, err
 	}
-
-	f := extendEnv(p.params, argv, e)
 
 	return eval(expr, f)
 }
 
 func expand(o *object, e *env) (*object, error) {
 	if !(isList(o) && !isEmptyList(o)) {
+		return o, nil
+	}
+
+	// don't expand quotes before evaluation
+	if (isQuoted(o) || isQuasiquoted(o)) {
 		return o, nil
 	}
 
@@ -565,17 +584,49 @@ func expand(o *object, e *env) (*object, error) {
 
 /* EVALUATION */
 
-func extendEnv(params []string, vals []*object, e *env) *env {
+func extendEnv(params []string, vals []*object, hasTail bool, e *env) (*env, error) {
+
+	var tail []*object
+	var boundVals []*object
+	for i, v := range vals {
+		switch {
+		case i < len(params) - 1:
+			boundVals = append(boundVals, v)
+		case i == len(params) - 1:
+			if hasTail {
+				tail = append(tail, v)
+			} else {
+				boundVals = append(boundVals, v)
+			}
+		case i > len(params) - 1:
+			if !hasTail {
+				return nil, fmt.Errorf("too many arguments")
+			}
+
+			tail = append(tail, v)
+		}
+	}
+
+	if hasTail {
+		boundVals = append(boundVals, vecToList(tail))
+	}
+
+	if len(boundVals) < len(params) {
+		return nil, fmt.Errorf("not enough arguments")
+	}
+				
 	m := make(map[string]*object, len(params))
 
 	for i := range params {
-		m[params[i]] = vals[i]
+		m[params[i]] = boundVals[i]
 	}
 
-	return &env{
+	ret := &env{
 		m:     m,
 		outer: e,
 	}
+
+	return ret, nil
 }
 
 func evalQuote(o *object, e *env) (*object, error) {
@@ -585,11 +636,11 @@ func evalQuote(o *object, e *env) (*object, error) {
 
 	return ret, nil
 }
-	
+
 func evalDefine(o *object, e *env) (*object, error) {
 	first, _ := cadr(o)
 	body, _ := cddr(o)
-	
+
 	var id *object
 
 	// working with lambda - rewrite and evaluate
@@ -681,7 +732,13 @@ func evalUnquote(o *object, e *env, level int) (*object, error) {
 		return nil, fmt.Errorf("illegal unquote")
 	case level == 0:
 		d, _ := cadr(o)
-		return eval(d, e)
+		r, err := eval(d, e)
+		if err != nil {
+			return nil, err
+		}
+
+		log.Printf("unquote evaluated to %s", r)
+		return r, nil
 	default:
 		log.Printf("evaluating unquoted object %s", o)
 		d, _ := cadr(o)
@@ -699,12 +756,18 @@ func evalUnquote(o *object, e *env, level int) (*object, error) {
 
 func evalSplicingUnquote(o *object, e *env, level int) (*object, error) {
 	body, _ := cadr(o)
+	evaled, err := evalUnquote(o, e, level)
+	if err != nil {
+		return nil, err
+	}
 
-	if !isList(body) {
+	log.Printf("splice result is %s", evaled)
+
+	if !isList(evaled) {
 		return nil, typeMismatch(listT, body.t)
 	}
 
-	return evalUnquote(o, e, level)
+	return evaled, nil
 }
 
 func evalQuasiquote(o *object, e *env, level int) (*object, error) {
@@ -743,7 +806,7 @@ func evalQuasiquote(o *object, e *env, level int) (*object, error) {
 			return nil, err
 		}
 		return p, nil
-	
+
 	case isList(q):
 		log.Printf("evaluating list")
 		vec := listToVec(q)
@@ -751,10 +814,12 @@ func evalQuasiquote(o *object, e *env, level int) (*object, error) {
 		for _, v := range vec {
 			// special case for unquote-splicing
 			if isSplicingUnquoted(v) {
+				log.Printf("evaluating splicing unquote %s at level %d", v, level-1)
 				p, err := evalSplicingUnquote(v, e, level-1)
 				if err != nil {
 					return nil, err
 				}
+				log.Printf("splice result: %s", p)
 				r := listToVec(p)
 
 				result = append(result, r...)
@@ -787,9 +852,75 @@ func evalVector(objs []*object, e *env) ([]*object, error) {
 	return ret, nil
 }
 
+func evalLambda(o *object, e *env) (*object, error) {
+	params, err := cadr(o)
+	if err != nil {
+		return nil, err
+	}
+	var paramObjs []*object
+
+	done := isEmptyList(params)
+	hasTail := false
+	log.Printf("params are %s", params)
+
+	head, _ := car(params)
+	tail, _ := cdr(params)
+	for !done {
+		paramObjs = append(paramObjs, head)
+		switch {
+		case !isList(tail):
+			head = tail
+			tail = emptyList
+			hasTail = true
+		case isEmptyList(tail):
+			done = true
+		default:
+			head, _ = car(tail)
+			tail, _ = cdr(tail)
+		}
+	}
+	log.Printf("params are now %s", paramObjs)
+
+	paramStrs := make([]string, len(paramObjs))
+	for i, p := range paramObjs {
+		if !isIdent(p) {
+			return nil, fmt.Errorf("invalid parameter value %s", p)
+		}
+
+		paramStrs[i] = p.v.(string)
+	}
+
+	bodyList, err := cddr(o)
+	if err != nil {
+		return nil, err
+	}
+
+	body := listToVec(bodyList)
+
+	nArgs := len(paramStrs)
+	if hasTail {
+		nArgs--
+	}
+
+	proc := compoundProc{
+		params: paramStrs,
+		body:   body,
+		nArgs:  nArgs,
+		e:      e,
+		hasTail: hasTail,
+	}
+
+	ret := &object{
+		t: procT,
+		v: proc,
+	}
+
+	return ret, nil
+}
+
 func eval(o *object, e *env) (*object, error) {
 
-	log.Printf("evaluating %s", o.String())
+	//log.Printf("evaluating %s", o.String())
 Tailcall:
 	switch {
 	case o == nil:
@@ -826,40 +957,7 @@ Tailcall:
 
 		goto Tailcall
 	case isLambda(o):
-		params, err := cadr(o)
-		if err != nil {
-			return nil, err
-		}
-		paramObjs := listToVec(params)
-		paramStrs := make([]string, len(paramObjs))
-		for i, p := range paramObjs {
-			if !isIdent(p) {
-				return nil, fmt.Errorf("invalid parameter value %s", p)
-			}
-
-			paramStrs[i] = p.v.(string)
-		}
-
-		bodyList, err := cddr(o)
-		if err != nil {
-			return nil, err
-		}
-
-		body := listToVec(bodyList)
-
-		proc := compoundProc{
-			params: paramStrs,
-			body:   body,
-			nArgs:  len(paramStrs),
-			e:      e,
-		}
-
-		ret := &object{
-			t: procT,
-			v: proc,
-		}
-
-		return ret, nil
+		return evalLambda(o, e)
 
 	case isList(o):
 		args, _ := cdr(o)
@@ -896,12 +994,10 @@ Tailcall:
 
 		proc := op.v.(compoundProc)
 
-		if proc.nArgs != len(argv) {
-			err = fmt.Errorf("argument length mismatch: %d != %d", len(proc.params), len(argv))
+		e, err = extendEnv(proc.params, argv, proc.hasTail, proc.e)
+		if err != nil {
 			return nil, err
 		}
-
-		e = extendEnv(proc.params, argv, proc.e)
 
 		body := proc.body
 		for i := 0; i < len(body)-1; i++ {

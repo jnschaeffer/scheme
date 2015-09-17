@@ -22,33 +22,110 @@
 %token <obj> NUM STRING IDENT BOOLEAN CHAR
 %token LPAREN RPAREN LVEC LU8VEC QUOTE BACKTICK COMMA COMMAAT DOT
 %token WSPACE
-%token IF
+%token <obj> IF LAMBDA DEFINE
 
 %type <obj> datum simple_datum compound_datum list vector expr quotation
 %type <obj> literal self_evaluating procedure
 %type <obj> quasiquote qq_template list_qq_template unquote derived
 %type <obj> qq_template_or_splice splicing_unquotation
-%type <objs> list_items exprs qq_templates_or_splices
+%type <objs> list_items exprs qq_templates_or_splices idents
+%type <obj> conditional lambda formals program definition def_formals datum_ident
 
 %start start
 
 %%
 
 start:
-  expr
+  program
   {
     root = $1
+  }
+
+program:
+  expr
+| definition
+
+definition:
+  LPAREN DEFINE IDENT expr RPAREN
+  {
+    $$ = cons(symbolObj("define"), cons($3, cons($4, emptyList)))
+  }
+| LPAREN DEFINE LPAREN IDENT def_formals RPAREN exprs RPAREN
+  {
+	definition := cons($4, $5)
+	body := vecToList($7)
+    $$ = cons(symbolObj("define"), cons(definition, body))
+  }
+
+def_formals:
+  // empty
+  {
+    $$ = emptyList
+  }
+| idents
+  {
+    $$ = vecToList($1)
+  }
+| idents DOT IDENT
+  {
+    $$ = vecToList(append($1, $3))
   }
 
 expr:
   IDENT
 | literal
 | procedure
+| conditional
+| lambda
 | LPAREN RPAREN
   {
     $$ = emptyList
   }
 | derived
+
+conditional:
+  LPAREN IF expr expr RPAREN
+  {
+    $$ = cons(symbolObj("if"), cons($3, cons($4, emptyList)))
+  }
+| LPAREN IF expr expr expr RPAREN
+  {
+    $$ = cons(symbolObj("if"), cons($3, cons($4, cons($5, emptyList))))
+  }
+
+lambda:
+  LPAREN LAMBDA formals exprs RPAREN
+  {
+	log.Printf("parsed lambda")
+	e := vecToList($4)
+    $$ = cons(symbolObj("lambda"), cons($3, e))
+  }
+
+formals:
+  LPAREN RPAREN
+  {
+    $$ = emptyList
+  }
+| LPAREN idents RPAREN
+  {
+    $$ = vecToList($2)
+  }
+| IDENT
+| LPAREN idents DOT IDENT RPAREN
+  {
+    o := append($2, $4)
+	$$ = vecToImproperList(o)
+  }
+
+idents:
+  IDENT
+  {
+    $$ = []*object{$1}
+  }
+| idents IDENT
+  {
+    $$ = append($1, $2)
+  }
 
 derived:
   quasiquote
@@ -148,8 +225,14 @@ simple_datum:
   NUM
 | STRING
 | BOOLEAN
-| IDENT
+| datum_ident
 | CHAR
+
+datum_ident:
+  IDENT
+| IF
+| LAMBDA
+| DEFINE
 
 compound_datum:
   list
@@ -228,13 +311,13 @@ func (x *exprLex) Lex(yylval *exprSymType) int {
     }
     
     return STRING
-  case IDENT:
+  case IDENT, IF, DEFINE, LAMBDA:
     yylval.obj = &object{
       t: identT,
       v: item.input,
     }
 
-    return IDENT
+    return item.t
   case BOOLEAN:
     yylval.obj = &object{
       t: boolT,
@@ -266,6 +349,7 @@ var err error
 
 func parse(s string) (*object, error) {
   root = nil
+  err = nil
 
   exprParse(&exprLex{lexer: newLexer(s, lexStart)})
 

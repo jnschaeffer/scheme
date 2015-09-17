@@ -12,6 +12,12 @@ const (
 	eof rune = -1
 )
 
+var idMap = map[string]int{
+	"lambda": LAMBDA,
+	"if":     IF,
+	"define": DEFINE,
+}
+
 type item struct {
 	t     int
 	input string
@@ -26,6 +32,7 @@ type lexer struct {
 	pos   int
 	width int
 	items chan item
+	idMap map[string]int
 }
 
 func isAlphaNumeric(r rune) bool {
@@ -185,7 +192,16 @@ func lexIdentifier(l *lexer) stateFn {
 
 	l.acceptRun(subseq)
 
-	l.emit(IDENT)
+	idText := l.input[l.start:l.pos]
+
+	log.Printf("checking for id text %s", idText)
+
+	if id, ok := l.idMap[idText]; ok {
+		log.Printf("emitting special ID %s", idText)
+		l.emit(id)
+	} else {
+		l.emit(IDENT)
+	}
 
 	return lexStart
 }
@@ -205,6 +221,7 @@ func newLexer(input string, start stateFn) *lexer {
 	l := &lexer{
 		input: input,
 		items: make(chan item, 2),
+		idMap: idMap,
 	}
 
 	go l.run(start)
