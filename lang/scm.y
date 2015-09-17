@@ -25,7 +25,8 @@
 
 %type <obj> datum simple_datum compound_datum list vector expr quotation
 %type <obj> literal self_evaluating procedure
-%type <objs> list_items exprs
+%type <obj> quasiquote qq_template list_qq_template unquote derived
+%type <objs> list_items exprs qq_templates
 
 %start start
 
@@ -41,6 +42,14 @@ expr:
   IDENT
 | literal
 | procedure
+| LPAREN RPAREN
+  {
+    $$ = emptyList
+  }
+| derived
+
+derived:
+  quasiquote
 
 procedure:
   LPAREN exprs RPAREN
@@ -61,6 +70,51 @@ exprs:
 literal:
   quotation
 | self_evaluating
+
+quasiquote:
+  BACKTICK qq_template
+  {
+    $$ = cons(symbolObj("quasiquote"), cons($2, emptyList))
+  }
+
+qq_template:
+  simple_datum
+| list_qq_template
+| unquote
+
+qq_templates:
+  qq_template
+  {
+    $$ = []*object{$1}
+  }
+| qq_templates qq_template
+  {
+    $$ = append($1, $2)
+  }
+
+list_qq_template:
+  quasiquote
+| LPAREN RPAREN
+  {
+    $$ = emptyList
+  }
+|  LPAREN qq_templates RPAREN
+  {
+    $$ = vecToList($2)
+  }
+| LPAREN qq_templates DOT qq_template RPAREN
+  {
+    $$ = $4
+    for i := len($2)-1; i >= 0; i-- {
+      $$ = cons($2[i], $$)
+    }
+  }
+
+unquote:
+  COMMA qq_template
+  {
+    $$ = cons(symbolObj("unquote"), cons($2, emptyList))
+  }
 
 self_evaluating:
   BOOLEAN

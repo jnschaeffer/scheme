@@ -29,23 +29,26 @@ const (
 	procT
 	primitiveT
 	errorT
+	macroT
 
 	intT
 	realT
 )
 
 var typeMap = map[objType]string{
-	boolT:  "bool",
-	numT:   "num",
-	vecT:   "vector",
-	charT:  "char",
-	strT:   "string",
-	symT:   "symbol",
-	bvecT:  "b-vector",
-	identT: "identifier",
-	listT:  "list",
-	procT:  "procedure",
-	errorT: "error",
+	boolT:      "bool",
+	numT:       "num",
+	vecT:       "vector",
+	charT:      "char",
+	strT:       "string",
+	symT:       "symbol",
+	bvecT:      "b-vector",
+	identT:     "identifier",
+	listT:      "list",
+	procT:      "procedure",
+	primitiveT: "primitive",
+	macroT:     "macro",
+	errorT:     "error",
 }
 
 func typeMismatch(exp, obs objType) error {
@@ -69,6 +72,7 @@ var (
 	isProc      = isTypeGen(procT)
 	isSym       = isTypeGen(symT)
 	isPrimitive = isTypeGen(primitiveT)
+	isMacro     = isTypeGen(macroT)
 )
 
 type number struct {
@@ -178,7 +182,7 @@ type list struct {
 	cdr *object
 }
 
-func (l list) String() string {
+func (l *list) String() string {
 
 	str := fmt.Sprintf("(%s", l.car.String())
 	x := l.cdr
@@ -188,7 +192,7 @@ func (l list) String() string {
 				str += fmt.Sprintf(")")
 				break
 			} else {
-				o := x.v.(list)
+				o := x.v.(*list)
 				str += fmt.Sprintf(" %s", o.car.String())
 				x = o.cdr
 			}
@@ -215,7 +219,8 @@ func listToVec(o *object) []*object {
 	var objs []*object
 
 	for o.v != nil {
-		if l, ok := o.v.(list); ok {
+		if isList(o) {
+			l := o.v.(*list)
 			objs = append(objs, l.car)
 			o = l.cdr
 		} else {
@@ -262,7 +267,7 @@ func (o *object) String() string {
 		if o.v == nil {
 			return "()"
 		} else {
-			lst := o.v.(list)
+			lst := o.v.(*list)
 			return lst.String()
 		}
 	case identT:
@@ -282,6 +287,7 @@ type compoundProc struct {
 	params []string
 	body   []*object
 	nArgs  int
+	e      *env
 }
 
 /* PRIMITIVES */
@@ -309,7 +315,7 @@ func cons(o1, o2 *object) *object {
 
 	r := &object{
 		t: listT,
-		v: list{
+		v: &list{
 			car: o1,
 			cdr: o2,
 		},
@@ -332,7 +338,7 @@ func car(args ...*object) (*object, error) {
 		return nil, fmt.Errorf("empty list")
 	}
 
-	return o.v.(list).car, nil
+	return o.v.(*list).car, nil
 }
 
 func cdr(args ...*object) (*object, error) {
@@ -345,7 +351,7 @@ func cdr(args ...*object) (*object, error) {
 		return nil, fmt.Errorf("reached empty list")
 	}
 
-	return o.v.(list).cdr, nil
+	return o.v.(*list).cdr, nil
 }
 
 func cdxr(depth int) primitiveFunc {
@@ -428,14 +434,18 @@ func isSelfEvaluating(o *object) bool {
 }
 
 func isTaggedList(o *object, tag string) bool {
-	if isList(o) {
-		l := o.v.(list)
+	if isList(o) && !isEmptyList(o) {
+		l := o.v.(*list)
 		if isIdent(l.car) {
 			return l.car.v.(string) == tag
 		}
 	}
 
 	return false
+}
+
+func isEmptyList(o *object) bool {
+	return isList(o) && o.v == nil
 }
 
 func isTaggedListGen(tag string) func(o *object) bool {
@@ -445,11 +455,13 @@ func isTaggedListGen(tag string) func(o *object) bool {
 }
 
 var (
-	isQuoted     = isTaggedListGen("quote")
-	isAssignment = isTaggedListGen("set!")
-	isDefinition = isTaggedListGen("define")
-	isLambda     = isTaggedListGen("lambda")
-	isIf         = isTaggedListGen("if")
+	isQuasiquoted = isTaggedListGen("quasiquote")
+	isQuoted      = isTaggedListGen("quote")
+	isAssignment  = isTaggedListGen("set!")
+	isDefinition  = isTaggedListGen("define")
+	isLambda      = isTaggedListGen("lambda")
+	isIf          = isTaggedListGen("if")
+	isUnquoted    = isTaggedListGen("unquote")
 )
 
 func isTrue(o *object) bool {
@@ -459,7 +471,7 @@ func isTrue(o *object) bool {
 func ifExprs(o *object) (*object, *object, *object) {
 	var pred, conseq, alt *object
 
-	args := o.v.(list).cdr
+	args := o.v.(*list).cdr
 	argv := listToVec(args)
 
 	pred, conseq = argv[0], argv[1]
@@ -516,7 +528,7 @@ func evalDefine(o *object, e *env) (*object, error) {
 }
 
 func evalAssignment(o *object, e *env) (*object, error) {
-	args := o.v.(list).cdr
+	args := o.v.(*list).cdr
 	argv := listToVec(args)
 
 	id, expr := argv[0], argv[1]
@@ -543,8 +555,84 @@ func evalPrimitive(p primitiveProc, args []*object, e *env) (*object, error) {
 	return r, err
 }
 
+func evalUnquote(o *object, e *env, level int) (*object, error) {
+	switch {
+	case level < 0:
+		return nil, fmt.Errorf("illegal unquote")
+	case level == 0:
+		d, _ := cadr(o)
+		return eval(d, e)
+	default:
+		log.Printf("evaluating unquoted object %s", o)
+		d, _ := cadr(o)
+		d, err := evalQuasiquote(d, e, level)
+		if err != nil {
+			return nil, err
+		}
+
+		result := cons(symbolObj("unquote"), cons(d, emptyList))
+
+		return result, nil
+	}
+}
+
+func evalQuasiquote(o *object, e *env, level int) (*object, error) {
+	log.Printf("evaluating quasiquote object %s at %d", o, level)
+
+	q := o
+
+	if level == 0 {
+		q, _ = cadr(o)
+		return evalQuasiquote(q, e, 1)
+	}
+
+	switch {
+	case isEmptyList(q):
+		log.Printf("empty list. returning")
+		return o, nil
+	case isSelfEvaluating(q) || isIdent(q):
+		log.Printf("self-evaluating. returning")
+		return o, nil
+	case isQuasiquoted(q):
+		log.Printf("increasing to level %d", level+1)
+		inner, _ := cadr(q)
+		p, err := evalQuasiquote(inner, e, level+1)
+		if err != nil {
+			return nil, err
+		}
+		q.v.(*list).cdr.v.(*list).car = p
+		log.Printf("returning %s", q.String())
+		return q, nil
+
+	case isUnquoted(q):
+		log.Printf("decreasing to level %d", level-1)
+		p, err := evalUnquote(q, e, level-1)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
+
+	case isList(q):
+		log.Printf("evaluating list")
+		for !isEmptyList(q) {
+			v, _ := car(q)
+			p, err := evalQuasiquote(v, e, level)
+			if err != nil {
+				return nil, err
+			}
+			q.v.(*list).car = p
+			q, _ = cdr(q)
+		}
+
+		return o, nil
+	}
+
+	return nil, fmt.Errorf("how did we get here?")
+}
+
 func eval(o *object, e *env) (*object, error) {
 
+	log.Printf("evaluating %s", o.String())
 Tailcall:
 	switch {
 	case o == nil:
@@ -557,6 +645,8 @@ Tailcall:
 			return nil, fmt.Errorf("unknown identifier %s", o)
 		}
 		return ret, nil
+	case isQuasiquoted(o):
+		return evalQuasiquote(o, e, 0)
 	case isQuoted(o):
 		return evalQuote(o, e)
 	case isDefinition(o):
@@ -602,6 +692,7 @@ Tailcall:
 			params: paramStrs,
 			body:   body,
 			nArgs:  len(paramStrs),
+			e:      e,
 		}
 
 		ret := &object{
@@ -648,7 +739,7 @@ Tailcall:
 			return nil, err
 		}
 
-		e = extendEnv(proc.params, argv, e)
+		e = extendEnv(proc.params, argv, proc.e)
 
 		body := proc.body
 		for i := 0; i < len(body)-1; i++ {
@@ -688,7 +779,7 @@ func collectInput(r *bufio.Reader) (string, error) {
 	for {
 		prompt := "> "
 		if leftCnt > 0 {
-			prompt = "  " + strings.Repeat("  ", leftCnt - rightCnt)
+			prompt = "  " + strings.Repeat("  ", leftCnt-rightCnt)
 		}
 
 		if _, err := os.Stdout.WriteString(prompt); err != nil {
