@@ -40,6 +40,10 @@ start:
   {
     root = $1
   }
+|
+  {
+    root = nil
+  }
 
 program:
   expr
