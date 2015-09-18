@@ -647,9 +647,11 @@ func evalDefine(o *object, e *env) (*object, error) {
 	if isList(first) {
 		id, _ = car(first)
 		params, _ := cdr(first)
+		log.Printf("splitting %s into %s and %s", first, id, params)
 
 		body = cons(symbolObj("lambda"),
 			cons(params, body))
+		log.Printf("rewritten as %s", body)
 	} else {
 		id = first
 		body, _ = car(body)
@@ -852,17 +854,23 @@ func evalVector(objs []*object, e *env) ([]*object, error) {
 	return ret, nil
 }
 
-func evalLambda(o *object, e *env) (*object, error) {
-	params, err := cadr(o)
-	if err != nil {
-		return nil, err
+func evalLambdaParams(params *object) ([]string, bool, error) {
+	switch {
+	case !isList(params):
+		if !isIdent(params) {
+			return nil, false, typeMismatch(identT, params.t)
+		}
+		return []string{params.v.(string)}, true, nil
+	case isEmptyList(params):
+		return nil, false, nil
 	}
+
 	var paramObjs []*object
 
-	done := isEmptyList(params)
 	hasTail := false
 	log.Printf("params are %s", params)
 
+	done := false
 	head, _ := car(params)
 	tail, _ := cdr(params)
 	for !done {
@@ -879,22 +887,36 @@ func evalLambda(o *object, e *env) (*object, error) {
 			tail, _ = cdr(tail)
 		}
 	}
+
 	log.Printf("params are now %s", paramObjs)
 
 	paramStrs := make([]string, len(paramObjs))
 	for i, p := range paramObjs {
 		if !isIdent(p) {
-			return nil, fmt.Errorf("invalid parameter value %s", p)
+			return nil, false, fmt.Errorf("invalid parameter value %s", p)
 		}
 
 		paramStrs[i] = p.v.(string)
+	}
+
+	return paramStrs, hasTail, nil
+}
+
+func evalLambda(o *object, e *env) (*object, error) {
+	params, err := cadr(o)
+	if err != nil {
+		return nil, err
+	}
+
+	paramStrs, hasTail, err := evalLambdaParams(params)
+	if err != nil {
+		return nil, err
 	}
 
 	bodyList, err := cddr(o)
 	if err != nil {
 		return nil, err
 	}
-
 	body := listToVec(bodyList)
 
 	nArgs := len(paramStrs)

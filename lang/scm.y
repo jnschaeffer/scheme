@@ -54,25 +54,21 @@ definition:
   {
     $$ = cons(symbolObj("define"), cons($3, cons($4, emptyList)))
   }
-| LPAREN DEFINE LPAREN IDENT def_formals RPAREN exprs RPAREN
+| LPAREN DEFINE LPAREN def_formals RPAREN exprs RPAREN
   {
-	definition := cons($4, $5)
-	body := vecToList($7)
+    definition := $4
+    body := vecToList($6)
     $$ = cons(symbolObj("define"), cons(definition, body))
   }
 
 def_formals:
-  // empty
-  {
-    $$ = emptyList
-  }
-| idents
+ idents
   {
     $$ = vecToList($1)
   }
 | idents DOT IDENT
   {
-    $$ = vecToList(append($1, $3))
+    $$ = vecToImproperList(append($1, $3))
   }
 
 expr:
@@ -118,7 +114,7 @@ formals:
 | LPAREN idents DOT IDENT RPAREN
   {
     o := append($2, $4)
-	$$ = vecToImproperList(o)
+    $$ = vecToImproperList(o)
   }
 
 idents:
