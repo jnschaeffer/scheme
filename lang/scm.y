@@ -3,7 +3,6 @@
 
   import (
     "fmt"
-    "log"
     "strings"
   )
 
@@ -96,7 +95,6 @@ conditional:
 lambda:
   LPAREN LAMBDA formals exprs RPAREN
   {
-	log.Printf("parsed lambda")
 	e := vecToList($4)
     $$ = cons(symbolObj("lambda"), cons($3, e))
   }
@@ -340,7 +338,6 @@ func (x *exprLex) Lex(yylval *exprSymType) int {
 }
 
 func (x *exprLex) Error(e string) {
-  log.Printf("error: %s\n", e)
   err = fmt.Errorf(e)
 }
 

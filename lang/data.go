@@ -3,8 +3,8 @@ package lang
 import (
 	"bufio"
 	"fmt"
+	"github.com/golang/glog"
 	"io"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -143,6 +143,78 @@ func add(n1, n2 number) number {
 	panic("unknown number type")
 }
 
+func sub(n1, n2 number) number {
+	switch n1.t {
+	case intT:
+		return number{
+			t:      intT,
+			intVal: n1.intVal - n2.intVal,
+		}
+	case realT:
+		return number{
+			t:        realT,
+			floatVal: n1.floatVal - n2.floatVal,
+		}
+	}
+
+	panic("unknown number type")
+}
+
+func mul(n1, n2 number) number {
+	switch n1.t {
+	case intT:
+		return number{
+			t:      intT,
+			intVal: n1.intVal * n2.intVal,
+		}
+	case realT:
+		return number{
+			t:        realT,
+			floatVal: n1.floatVal * n2.floatVal,
+		}
+	}
+
+	panic("unknown number type")
+}
+
+func div(n1, n2 number) number {
+	switch n1.t {
+	case intT:
+		return number{
+			t:      intT,
+			intVal: n1.intVal / n2.intVal,
+		}
+	case realT:
+		return number{
+			t:        realT,
+			floatVal: n1.floatVal / n2.floatVal,
+		}
+	}
+
+	panic("unknown number type")
+}
+
+func numOpGen(f numOp, initial number) func(...*object) (*object, error) {
+	return func(o ...*object) (*object, error) {
+		result := initial
+
+		for _, n := range o {
+			if !isNum(n) {
+				return nil, typeMismatch(numT, n.t)
+			}
+
+			result = applyNumOp(f, result, n.v.(number))
+		}
+
+		ret := &object{
+			t: numT,
+			v: result,
+		}
+
+		return ret, nil
+	}
+}
+
 type env struct {
 	m     map[string]*object
 	outer *env
@@ -222,7 +294,7 @@ func vecToImproperList(objs []*object) *object {
 	}
 
 	o := objs[l-1]
-	for i := l-2; i >= 0; i-- {
+	for i := l - 2; i >= 0; i-- {
 		o = cons(objs[i], o)
 	}
 
@@ -268,6 +340,10 @@ func boolObj(b bool) *object {
 }
 
 func (o *object) String() string {
+	if o == nil {
+		return ""
+	}
+
 	switch o.t {
 	case boolT:
 		if o.v.(bool) {
@@ -290,6 +366,8 @@ func (o *object) String() string {
 		return fmt.Sprintf("\"%s\"", o.v.(string))
 	case procT:
 		return fmt.Sprintf("#<proc>")
+	case macroT:
+		return fmt.Sprintf("#<macro>")
 	default:
 		return fmt.Sprintf("%s: %#v", typeMap[o.t], o.v)
 	}
@@ -298,10 +376,10 @@ func (o *object) String() string {
 /* PROCEDURE */
 
 type compoundProc struct {
-	params []string
-	body   []*object
-	nArgs  int
-	e      *env
+	params  []string
+	body    []*object
+	nArgs   int
+	e       *env
 	hasTail bool
 }
 
@@ -310,14 +388,16 @@ type compoundProc struct {
 type primitiveFunc func(...*object) (*object, error)
 
 type primitiveProc struct {
-	f     primitiveFunc
-	nArgs int
+	f       primitiveFunc
+	nArgs   int
+	hasTail bool
 }
 
-func procGen(f primitiveFunc, nArgs int) *object {
+func procGen(f primitiveFunc, nArgs int, hasTail bool) *object {
 	p := primitiveProc{
-		f:     f,
-		nArgs: nArgs,
+		f:       f,
+		nArgs:   nArgs,
+		hasTail: hasTail,
 	}
 
 	return &object{
@@ -507,7 +587,7 @@ func isApplication(o *object) bool {
 /* EXPANSION */
 
 func applyMacro(m *object, argv []*object, e *env) (*object, error) {
-	log.Printf("applying %s", m.v)
+	glog.V(3).Infof("applying %s", m.v)
 	p := m.v.(compoundProc)
 	expr := p.body[0]
 
@@ -525,7 +605,7 @@ func expand(o *object, e *env) (*object, error) {
 	}
 
 	// don't expand quotes before evaluation
-	if (isQuoted(o) || isQuasiquoted(o)) {
+	if isQuoted(o) || isQuasiquoted(o) {
 		return o, nil
 	}
 
@@ -538,18 +618,18 @@ func expand(o *object, e *env) (*object, error) {
 		m := e.lookup(head.v.(string))
 
 		if m != nil && isMacro(m) {
-			log.Printf("found macro %s", head.String())
+			glog.V(3).Infof("found macro %s", head.String())
 			argv := listToVec(tail)
-			log.Printf("expanding %s", o.String())
+			glog.V(3).Infof("expanding %s", o.String())
 
 			r, err := applyMacro(m, argv, e)
 
 			if err != nil {
-				log.Printf("MACRO ERROR")
+				glog.V(3).Infof("MACRO ERROR")
 				return nil, err
 			}
 
-			log.Printf("expanded to %s", r.String())
+			glog.V(3).Infof("expanded to %s", r.String())
 
 			return expand(r, e)
 		}
@@ -557,7 +637,7 @@ func expand(o *object, e *env) (*object, error) {
 
 	for !done {
 		if isList(head) {
-			log.Printf("expanding list")
+			glog.V(3).Infof("expanding list")
 			r, err := expand(head, e)
 			if err != nil {
 				return nil, err
@@ -590,15 +670,15 @@ func extendEnv(params []string, vals []*object, hasTail bool, e *env) (*env, err
 	var boundVals []*object
 	for i, v := range vals {
 		switch {
-		case i < len(params) - 1:
+		case i < len(params)-1:
 			boundVals = append(boundVals, v)
-		case i == len(params) - 1:
+		case i == len(params)-1:
 			if hasTail {
 				tail = append(tail, v)
 			} else {
 				boundVals = append(boundVals, v)
 			}
-		case i > len(params) - 1:
+		case i > len(params)-1:
 			if !hasTail {
 				return nil, fmt.Errorf("too many arguments")
 			}
@@ -614,7 +694,7 @@ func extendEnv(params []string, vals []*object, hasTail bool, e *env) (*env, err
 	if len(boundVals) < len(params) {
 		return nil, fmt.Errorf("not enough arguments")
 	}
-				
+
 	m := make(map[string]*object, len(params))
 
 	for i := range params {
@@ -647,11 +727,11 @@ func evalDefine(o *object, e *env) (*object, error) {
 	if isList(first) {
 		id, _ = car(first)
 		params, _ := cdr(first)
-		log.Printf("splitting %s into %s and %s", first, id, params)
+		glog.V(3).Infof("splitting %s into %s and %s", first, id, params)
 
 		body = cons(symbolObj("lambda"),
 			cons(params, body))
-		log.Printf("rewritten as %s", body)
+		glog.V(3).Infof("rewritten as %s", body)
 	} else {
 		id = first
 		body, _ = car(body)
@@ -686,7 +766,7 @@ func evalAssignment(o *object, e *env) (*object, error) {
 }
 
 func evalPrimitive(p primitiveProc, args []*object, e *env) (*object, error) {
-	if p.nArgs != len(args) {
+	if !p.hasTail && p.nArgs != len(args) {
 		err := fmt.Errorf("argument length mismatch: %d != %d", p.nArgs, len(args))
 		return nil, err
 	}
@@ -739,10 +819,10 @@ func evalUnquote(o *object, e *env, level int) (*object, error) {
 			return nil, err
 		}
 
-		log.Printf("unquote evaluated to %s", r)
+		glog.V(3).Infof("unquote evaluated to %s", r)
 		return r, nil
 	default:
-		log.Printf("evaluating unquoted object %s", o)
+		glog.V(3).Infof("evaluating unquoted object %s", o)
 		d, _ := cadr(o)
 		d, err := evalQuasiquote(d, e, level)
 		if err != nil {
@@ -763,7 +843,7 @@ func evalSplicingUnquote(o *object, e *env, level int) (*object, error) {
 		return nil, err
 	}
 
-	log.Printf("splice result is %s", evaled)
+	glog.V(3).Infof("splice result is %s", evaled)
 
 	if !isList(evaled) {
 		return nil, typeMismatch(listT, body.t)
@@ -773,7 +853,7 @@ func evalSplicingUnquote(o *object, e *env, level int) (*object, error) {
 }
 
 func evalQuasiquote(o *object, e *env, level int) (*object, error) {
-	log.Printf("evaluating quasiquote object %s at %d", o, level)
+	glog.V(3).Infof("evaluating quasiquote object %s at %d", o, level)
 
 	q := o
 
@@ -784,13 +864,13 @@ func evalQuasiquote(o *object, e *env, level int) (*object, error) {
 
 	switch {
 	case isEmptyList(q):
-		log.Printf("empty list. returning")
+		glog.V(3).Infof("empty list. returning")
 		return o, nil
 	case isSelfEvaluating(q) || isIdent(q):
-		log.Printf("self-evaluating. returning")
+		glog.V(3).Infof("self-evaluating. returning")
 		return o, nil
 	case isQuasiquoted(q):
-		log.Printf("increasing to level %d", level+1)
+		glog.V(3).Infof("increasing to level %d", level+1)
 		inner, _ := cadr(q)
 		p, err := evalQuasiquote(inner, e, level+1)
 		if err != nil {
@@ -798,11 +878,11 @@ func evalQuasiquote(o *object, e *env, level int) (*object, error) {
 		}
 		result := cons(symbolObj("quasiquote"), cons(p, emptyList))
 
-		log.Printf("returning %s", q.String())
+		glog.V(3).Infof("returning %s", q.String())
 		return result, nil
 
 	case isUnquoted(q):
-		log.Printf("decreasing to level %d", level-1)
+		glog.V(3).Infof("decreasing to level %d", level-1)
 		p, err := evalUnquote(q, e, level-1)
 		if err != nil {
 			return nil, err
@@ -810,18 +890,18 @@ func evalQuasiquote(o *object, e *env, level int) (*object, error) {
 		return p, nil
 
 	case isList(q):
-		log.Printf("evaluating list")
+		glog.V(3).Infof("evaluating list")
 		vec := listToVec(q)
 		var result []*object
 		for _, v := range vec {
 			// special case for unquote-splicing
 			if isSplicingUnquoted(v) {
-				log.Printf("evaluating splicing unquote %s at level %d", v, level-1)
+				glog.V(3).Infof("evaluating splicing unquote %s at level %d", v, level-1)
 				p, err := evalSplicingUnquote(v, e, level-1)
 				if err != nil {
 					return nil, err
 				}
-				log.Printf("splice result: %s", p)
+				glog.V(3).Infof("splice result: %s", p)
 				r := listToVec(p)
 
 				result = append(result, r...)
@@ -868,7 +948,7 @@ func evalLambdaParams(params *object) ([]string, bool, error) {
 	var paramObjs []*object
 
 	hasTail := false
-	log.Printf("params are %s", params)
+	glog.V(3).Infof("params are %s", params)
 
 	done := false
 	head, _ := car(params)
@@ -888,7 +968,7 @@ func evalLambdaParams(params *object) ([]string, bool, error) {
 		}
 	}
 
-	log.Printf("params are now %s", paramObjs)
+	glog.V(3).Infof("params are now %s", paramObjs)
 
 	paramStrs := make([]string, len(paramObjs))
 	for i, p := range paramObjs {
@@ -925,10 +1005,10 @@ func evalLambda(o *object, e *env) (*object, error) {
 	}
 
 	proc := compoundProc{
-		params: paramStrs,
-		body:   body,
-		nArgs:  nArgs,
-		e:      e,
+		params:  paramStrs,
+		body:    body,
+		nArgs:   nArgs,
+		e:       e,
 		hasTail: hasTail,
 	}
 
@@ -942,7 +1022,7 @@ func evalLambda(o *object, e *env) (*object, error) {
 
 func eval(o *object, e *env) (*object, error) {
 
-	//log.Printf("evaluating %s", o.String())
+	//glog.V(3).Infof("evaluating %s", o.String())
 Tailcall:
 	switch {
 	case o == nil:
@@ -1038,16 +1118,21 @@ Tailcall:
 }
 
 var globalEnvMap = map[string]*object{
-	"cons":   procGen(consPrimitive, 2),
-	"car":    procGen(car, 1),
-	"cdr":    procGen(cdr, 1),
-	"cddr":   procGen(cddr, 1),
-	"cdddr":  procGen(cdddr, 1),
-	"cadr":   procGen(cadr, 1),
-	"caddr":  procGen(caddr, 1),
-	"cadddr": procGen(cadddr, 1),
-	"eq?":    procGen(eq, 2),
-	"quit":   procGen(quit, 0),
+	"cons":   procGen(consPrimitive, 2, false),
+	"car":    procGen(car, 1, false),
+	"cdr":    procGen(cdr, 1, false),
+	"cddr":   procGen(cddr, 1, false),
+	"cdddr":  procGen(cdddr, 1, false),
+	"cadr":   procGen(cadr, 1, false),
+	"caddr":  procGen(caddr, 1, false),
+	"cadddr": procGen(cadddr, 1, false),
+	"eq?":    procGen(eq, 2, false),
+	"quit":   procGen(quit, 0, false),
+	"exit":   procGen(quit, 0, false),
+	"+":      procGen(numOpGen(add, parseNum("0")), 0, true),
+	"-":      procGen(numOpGen(sub, parseNum("0")), 0, true),
+	"*":      procGen(numOpGen(mul, parseNum("1")), 0, true),
+	"/":      procGen(numOpGen(div, parseNum("1")), 0, true),
 }
 
 func collectInput(r *bufio.Reader) (string, error) {
@@ -1063,7 +1148,7 @@ func collectInput(r *bufio.Reader) (string, error) {
 		}
 
 		if _, err := os.Stdout.WriteString(prompt); err != nil {
-			log.Fatal(err)
+			glog.Fatal(err)
 		}
 		line, err := r.ReadBytes('\n')
 		if err == io.EOF {
@@ -1124,7 +1209,9 @@ func REPL() {
 		if err != nil {
 			fmt.Printf("ERROR: %s\n", err)
 		} else {
-			fmt.Printf("%s\n", o)
+			if o != nil {
+				fmt.Printf("%s\n", o)
+			}
 		}
 	}
 }

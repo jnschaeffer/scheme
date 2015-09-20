@@ -7,15 +7,15 @@
 (define (not x) (if x #f #t))
 
 (define-syntax let
-  (lambda (bindings . body)
-	`((lambda ,(map car bindings) ,@body) ,@(map cadr bindings))))
+  (lambda (bindings body1 . rest)
+	`((lambda ,(map car bindings) ,@(cons body1 rest)) ,@(map cadr bindings))))
 
 (define-syntax let*
-  (lambda (bindings . body)
+  (lambda (bindings body1 . rest)
 	(if (eq? bindings `())
-	  `(let () ,@body)
+	  `(let () ,@(cons body1 rest))
 	  `(let (,(car bindings))
-		 (let* ,(cdr bindings) ,@body)))))
+		 (let* ,(cdr bindings) body1 ,@rest)))))
 
 (define-syntax or
   (lambda vals

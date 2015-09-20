@@ -1,11 +1,15 @@
+//go:generate -command yacc go tool yacc
+//go:generate yacc -o scm.go -p "expr" scm.y
+
 package lang
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/golang/glog"
 )
 
 const (
@@ -194,10 +198,10 @@ func lexIdentifier(l *lexer) stateFn {
 
 	idText := l.input[l.start:l.pos]
 
-	log.Printf("checking for id text %s", idText)
+	glog.V(3).Infof("checking for id text %s", idText)
 
 	if id, ok := l.idMap[idText]; ok {
-		log.Printf("emitting special ID %s", idText)
+		glog.V(3).Infof("emitting special ID %s", idText)
 		l.emit(id)
 	} else {
 		l.emit(IDENT)
@@ -207,7 +211,7 @@ func lexIdentifier(l *lexer) stateFn {
 }
 
 func lexCharacter(l *lexer) stateFn {
-	log.Printf("lexing character")
+	glog.V(3).Infof("lexing character")
 	if l.next() == 'x' {
 		l.acceptRun("0123456789abcdefABCDEF")
 	}
