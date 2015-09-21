@@ -311,7 +311,7 @@ func (x *exprLex) Lex(yylval *exprSymType) int {
     return STRING
   case IDENT, IF, DEFINE, LAMBDA:
     yylval.obj = &object{
-      t: identT,
+      t: symbolT,
       v: item.input,
     }
 

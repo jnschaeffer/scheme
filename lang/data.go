@@ -6,6 +6,7 @@ import (
 	"github.com/golang/glog"
 	"io"
 	"os"
+
 	"strconv"
 	"strings"
 )
@@ -24,31 +25,33 @@ const (
 	symT
 	strT
 	bvecT
-	identT
+	symbolT
 	listT
 	procT
 	primitiveT
 	errorT
 	macroT
+	environmentT
 
 	intT
 	realT
 )
 
 var typeMap = map[objType]string{
-	boolT:      "bool",
-	numT:       "num",
-	vecT:       "vector",
-	charT:      "char",
-	strT:       "string",
-	symT:       "symbol",
-	bvecT:      "b-vector",
-	identT:     "identifier",
-	listT:      "list",
-	procT:      "procedure",
-	primitiveT: "primitive",
-	macroT:     "macro",
-	errorT:     "error",
+	boolT:        "bool",
+	numT:         "num",
+	vecT:         "vector",
+	charT:        "char",
+	strT:         "string",
+	symT:         "symbol",
+	bvecT:        "b-vector",
+	symbolT:      "identifier",
+	listT:        "list",
+	procT:        "procedure",
+	primitiveT:   "primitive",
+	macroT:       "macro",
+	errorT:       "error",
+	environmentT: "environment",
 }
 
 func typeMismatch(exp, obs objType) error {
@@ -62,17 +65,18 @@ func isTypeGen(t objType) func(o *object) bool {
 }
 
 var (
-	isBool      = isTypeGen(boolT)
-	isNum       = isTypeGen(numT)
-	isVec       = isTypeGen(vecT)
-	isChar      = isTypeGen(charT)
-	isString    = isTypeGen(strT)
-	isIdent     = isTypeGen(identT)
-	isList      = isTypeGen(listT)
-	isProc      = isTypeGen(procT)
-	isSym       = isTypeGen(symT)
-	isPrimitive = isTypeGen(primitiveT)
-	isMacro     = isTypeGen(macroT)
+	isBool        = isTypeGen(boolT)
+	isNum         = isTypeGen(numT)
+	isVec         = isTypeGen(vecT)
+	isChar        = isTypeGen(charT)
+	isString      = isTypeGen(strT)
+	isIdent       = isTypeGen(symbolT)
+	isList        = isTypeGen(listT)
+	isProc        = isTypeGen(procT)
+	isSym         = isTypeGen(symT)
+	isPrimitive   = isTypeGen(primitiveT)
+	isMacro       = isTypeGen(macroT)
+	isEnvironment = isTypeGen(environmentT)
 )
 
 type number struct {
@@ -212,14 +216,12 @@ func numOpGen(f numOp, initial number, isSubDiv bool) func(...*object) (*object,
 				result = n.v.(number)
 			}
 		default:
-			if isSubDiv {
-				n := o[0]
-				if !isNum(n) {
-					return nil, typeMismatch(numT, n.t)
-				}
-				result = n.v.(number)
-				o = o[1:]
+			n := o[0]
+			if !isNum(n) {
+				return nil, typeMismatch(numT, n.t)
 			}
+			result = n.v.(number)
+			o = o[1:]
 
 			for _, n := range o {
 				if !isNum(n) {
@@ -351,7 +353,7 @@ type object struct {
 
 func symbolObj(s string) *object {
 	return &object{
-		t: identT,
+		t: symbolT,
 		v: s,
 	}
 }
@@ -384,7 +386,7 @@ func (o *object) String() string {
 			lst := o.v.(*list)
 			return lst.String()
 		}
-	case identT:
+	case symbolT:
 		return o.v.(string)
 	case strT:
 		return fmt.Sprintf("\"%s\"", o.v.(string))
@@ -395,7 +397,7 @@ func (o *object) String() string {
 	case primitiveT:
 		return fmt.Sprintf("#<primitive>")
 	default:
-		return fmt.Sprintf("%s: %#v", typeMap[o.t], o.v)
+		return fmt.Sprintf("#<%s>", typeMap[o.t])
 	}
 }
 
@@ -537,6 +539,64 @@ func quit(args ...*object) (*object, error) {
 	os.Exit(0)
 
 	return nil, nil
+}
+
+func read(args ...*object) (*object, error) {
+	r := bufio.NewReader(os.Stdin)
+
+	s, err := collectInput(r, "> ")
+	if err != nil {
+		return nil, err
+	}
+
+	return parse(s)
+}
+
+func write(args ...*object) (*object, error) {
+	fmt.Printf("%s\n", args[0])
+	return nil, nil
+}
+
+func evalProc(args ...*object) (*object, error) {
+	o := args[0]
+	eObj := args[1]
+
+	if !isEnvironment(eObj) {
+		return nil, typeMismatch(environmentT, eObj.t)
+	}
+
+	e := eObj.v.(*env)
+
+	return eval(o, e)
+}
+
+func nullEnv(args ...*object) (*object, error) {
+	o := args[0]
+
+	if !isNum(o) && o.v.(number).t != intT {
+		return nil, typeMismatch(numT, o.t)
+	}
+
+	n := o.v.(number).intVal
+
+	if n != 7 {
+		return nil, fmt.Errorf("null-environment supports only R7RS")
+	}
+
+	globalEnv := &env{
+		m:     globalEnvMap,
+		outer: nil,
+	}
+
+	ret := &object{
+		t: environmentT,
+		v: &env{
+			m:     map[string]*object{},
+			outer: globalEnv,
+		},
+	}
+
+	return ret, nil
 }
 
 /* ANALYSIS */
@@ -817,7 +877,7 @@ func evalSyntaxDefinition(o *object, e *env) (*object, error) {
 	}
 
 	if !isIdent(id) {
-		return nil, typeMismatch(identT, id.t)
+		return nil, typeMismatch(symbolT, id.t)
 	}
 
 	if !isProc(p) {
@@ -964,7 +1024,7 @@ func evalLambdaParams(params *object) ([]string, bool, error) {
 	switch {
 	case !isList(params):
 		if !isIdent(params) {
-			return nil, false, typeMismatch(identT, params.t)
+			return nil, false, typeMismatch(symbolT, params.t)
 		}
 		return []string{params.v.(string)}, true, nil
 	case isEmptyList(params):
@@ -1048,14 +1108,14 @@ func evalLambda(o *object, e *env) (*object, error) {
 
 func eval(o *object, e *env) (*object, error) {
 
-	//glog.V(3).Infof("evaluating %s", o.String())
+	glog.V(4).Infof("evaluating %s", o.String())
 Tailcall:
 	switch {
 	case o == nil:
 		return nil, nil
 	case isSelfEvaluating(o):
 		return o, nil
-	case o.t == identT:
+	case o.t == symbolT:
 		ret := e.lookup(o.v.(string))
 		if ret == nil {
 			return nil, fmt.Errorf("unknown identifier %s", o)
@@ -1159,16 +1219,24 @@ var globalEnvMap = map[string]*object{
 	"-":      procGen(numOpGen(sub, parseNum("0"), true), 0, true),
 	"*":      procGen(numOpGen(mul, parseNum("1"), false), 0, true),
 	"/":      procGen(numOpGen(div, parseNum("1.0"), true), 0, true),
+	"read":   procGen(read, 0, false),
+	"write":  procGen(write, 1, false),
+	"eval":   procGen(evalProc, 2, false),
 }
 
-func collectInput(r *bufio.Reader) (string, error) {
+func init() {
+	globalEnvMap["null-environment"] = procGen(nullEnv, 1, false)
+}
+
+func collectInput(r *bufio.Reader, prompt string) (string, error) {
 	var stmt []byte
 
 	leftCnt := 0
 	rightCnt := 0
 
+	promptOrig := prompt
 	for {
-		prompt := "> "
+		prompt = promptOrig
 		if leftCnt > 0 {
 			prompt = "  " + strings.Repeat("  ", leftCnt-rightCnt)
 		}
@@ -1205,12 +1273,18 @@ func collectInput(r *bufio.Reader) (string, error) {
 
 func REPL() {
 	input := bufio.NewReader(os.Stdin)
-	e := &env{
+	outer := &env{
 		m:     globalEnvMap,
 		outer: nil,
 	}
+
+	e := &env{
+		m: map[string]*object{},
+		outer: outer,
+	}
+
 	for {
-		line, err := collectInput(input)
+		line, err := collectInput(input, "] ")
 		if err == io.EOF {
 			return
 		}
