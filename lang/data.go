@@ -86,7 +86,7 @@ func (n number) String() string {
 	case intT:
 		return fmt.Sprintf("%d", n.intVal)
 	case realT:
-		return fmt.Sprintf("%f", n.floatVal)
+		return fmt.Sprintf("%g", n.floatVal)
 	default:
 		return "?"
 	}
@@ -194,16 +194,40 @@ func div(n1, n2 number) number {
 	panic("unknown number type")
 }
 
-func numOpGen(f numOp, initial number) func(...*object) (*object, error) {
+func numOpGen(f numOp, initial number, isSubDiv bool) func(...*object) (*object, error) {
 	return func(o ...*object) (*object, error) {
-		result := initial
+		var result number
 
-		for _, n := range o {
+		switch {
+		case len(o) == 0:
+			result = initial
+		case len(o) == 1:
+			n := o[0]
 			if !isNum(n) {
 				return nil, typeMismatch(numT, n.t)
 			}
+			if isSubDiv {
+				result = applyNumOp(f, initial, n.v.(number))
+			} else {
+				result = n.v.(number)
+			}
+		default:
+			if isSubDiv {
+				n := o[0]
+				if !isNum(n) {
+					return nil, typeMismatch(numT, n.t)
+				}
+				result = n.v.(number)
+				o = o[1:]
+			}
 
-			result = applyNumOp(f, result, n.v.(number))
+			for _, n := range o {
+				if !isNum(n) {
+					return nil, typeMismatch(numT, n.t)
+				}
+
+				result = applyNumOp(f, result, n.v.(number))
+			}
 		}
 
 		ret := &object{
@@ -368,6 +392,8 @@ func (o *object) String() string {
 		return fmt.Sprintf("#<proc>")
 	case macroT:
 		return fmt.Sprintf("#<macro>")
+	case primitiveT:
+		return fmt.Sprintf("#<primitive>")
 	default:
 		return fmt.Sprintf("%s: %#v", typeMap[o.t], o.v)
 	}
@@ -1129,10 +1155,10 @@ var globalEnvMap = map[string]*object{
 	"eq?":    procGen(eq, 2, false),
 	"quit":   procGen(quit, 0, false),
 	"exit":   procGen(quit, 0, false),
-	"+":      procGen(numOpGen(add, parseNum("0")), 0, true),
-	"-":      procGen(numOpGen(sub, parseNum("0")), 0, true),
-	"*":      procGen(numOpGen(mul, parseNum("1")), 0, true),
-	"/":      procGen(numOpGen(div, parseNum("1")), 0, true),
+	"+":      procGen(numOpGen(add, parseNum("0"), false), 0, true),
+	"-":      procGen(numOpGen(sub, parseNum("0"), true), 0, true),
+	"*":      procGen(numOpGen(mul, parseNum("1"), false), 0, true),
+	"/":      procGen(numOpGen(div, parseNum("1.0"), true), 0, true),
 }
 
 func collectInput(r *bufio.Reader) (string, error) {

@@ -1,7 +1,12 @@
 package main
 
-import "github.com/jnschaeffer/scheme/lang"
+import (
+	"flag"
+
+	"github.com/jnschaeffer/scheme/lang"
+)
 
 func main() {
+	flag.Parse()
 	lang.REPL()
 }
