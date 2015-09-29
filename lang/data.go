@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 
-	"strconv"
 	"strings"
 )
 
@@ -32,6 +31,8 @@ const (
 	errorT
 	macroT
 	environmentT
+	
+	qualifiedSymT
 
 	intT
 	realT
@@ -64,13 +65,26 @@ func isTypeGen(t objType) func(o *object) bool {
 	}
 }
 
+func isTypeProcGen(f func (o *object) bool) primitiveFunc {
+	return func(o ...*object) (*object, error) {
+		b := f(o[0])
+
+		ret := &object{
+			t: boolT,
+			v: b,
+		}
+
+		return ret, nil
+	}
+}
+
 var (
 	isBool        = isTypeGen(boolT)
 	isNum         = isTypeGen(numT)
 	isVec         = isTypeGen(vecT)
 	isChar        = isTypeGen(charT)
 	isString      = isTypeGen(strT)
-	isIdent       = isTypeGen(symbolT)
+	isSymbol      = isTypeGen(symbolT)
 	isList        = isTypeGen(listT)
 	isProc        = isTypeGen(procT)
 	isSym         = isTypeGen(symT)
@@ -79,198 +93,34 @@ var (
 	isEnvironment = isTypeGen(environmentT)
 )
 
-type number struct {
-	t        objType
-	intVal   int
-	floatVal float64
-}
-
-func (n number) String() string {
-	switch n.t {
-	case intT:
-		return fmt.Sprintf("%d", n.intVal)
-	case realT:
-		return fmt.Sprintf("%g", n.floatVal)
-	default:
-		return "?"
-	}
-}
-
-type numOp func(n1, n2 number) number
-
-func parseNum(s string) number {
-	if i, err := strconv.Atoi(s); err == nil {
-		return number{
-			t:      intT,
-			intVal: i,
-		}
-	}
-
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return number{
-			t:        realT,
-			floatVal: f,
-		}
-	}
-
-	return number{}
-}
-
-func applyNumOp(f numOp, n1, n2 number) number {
-	if n1.t > n2.t {
-		n2.t = realT
-		n2.floatVal = float64(n2.intVal)
-	}
-
-	if n2.t > n1.t {
-		n1.t = realT
-		n1.floatVal = float64(n1.intVal)
-	}
-
-	return f(n1, n2)
-}
-
-func add(n1, n2 number) number {
-	switch n1.t {
-	case intT:
-		return number{
-			t:      intT,
-			intVal: n1.intVal + n2.intVal,
-		}
-	case realT:
-		return number{
-			t:        realT,
-			floatVal: n1.floatVal + n2.floatVal,
-		}
-	}
-
-	panic("unknown number type")
-}
-
-func sub(n1, n2 number) number {
-	switch n1.t {
-	case intT:
-		return number{
-			t:      intT,
-			intVal: n1.intVal - n2.intVal,
-		}
-	case realT:
-		return number{
-			t:        realT,
-			floatVal: n1.floatVal - n2.floatVal,
-		}
-	}
-
-	panic("unknown number type")
-}
-
-func mul(n1, n2 number) number {
-	switch n1.t {
-	case intT:
-		return number{
-			t:      intT,
-			intVal: n1.intVal * n2.intVal,
-		}
-	case realT:
-		return number{
-			t:        realT,
-			floatVal: n1.floatVal * n2.floatVal,
-		}
-	}
-
-	panic("unknown number type")
-}
-
-func div(n1, n2 number) number {
-	switch n1.t {
-	case intT:
-		return number{
-			t:      intT,
-			intVal: n1.intVal / n2.intVal,
-		}
-	case realT:
-		return number{
-			t:        realT,
-			floatVal: n1.floatVal / n2.floatVal,
-		}
-	}
-
-	panic("unknown number type")
-}
-
-func numOpGen(f numOp, initial number, isSubDiv bool) func(...*object) (*object, error) {
-	return func(o ...*object) (*object, error) {
-		var result number
-
-		switch {
-		case len(o) == 0:
-			result = initial
-		case len(o) == 1:
-			n := o[0]
-			if !isNum(n) {
-				return nil, typeMismatch(numT, n.t)
-			}
-			if isSubDiv {
-				result = applyNumOp(f, initial, n.v.(number))
-			} else {
-				result = n.v.(number)
-			}
-		default:
-			n := o[0]
-			if !isNum(n) {
-				return nil, typeMismatch(numT, n.t)
-			}
-			result = n.v.(number)
-			o = o[1:]
-
-			for _, n := range o {
-				if !isNum(n) {
-					return nil, typeMismatch(numT, n.t)
-				}
-
-				result = applyNumOp(f, result, n.v.(number))
-			}
-		}
-
-		ret := &object{
-			t: numT,
-			v: result,
-		}
-
-		return ret, nil
-	}
-}
 
 type env struct {
 	m     map[string]*object
 	outer *env
 }
 
-func (e *env) lookup(k string) *object {
+func (e *env) lookup(k string) (*object, bool) {
 	for e != nil {
 		if o, ok := e.m[k]; ok {
-			return o
+			return o, true
 		}
 		e = e.outer
 	}
 
-	return nil
+	return nil, false
 }
 
-func (e *env) set(k string, o *object) *object {
+func (e *env) set(k string, o *object) {
 	f := e
 
 	for f != nil {
 		if _, ok := f.m[k]; ok {
 			f.m[k] = o
-			return o
 		}
 		f = f.outer
 	}
 
 	e.m[k] = o
-
-	return o
 }
 
 /* LIST */
@@ -411,194 +261,6 @@ type compoundProc struct {
 	hasTail bool
 }
 
-/* PRIMITIVES */
-
-type primitiveFunc func(...*object) (*object, error)
-
-type primitiveProc struct {
-	f       primitiveFunc
-	nArgs   int
-	hasTail bool
-}
-
-func procGen(f primitiveFunc, nArgs int, hasTail bool) *object {
-	p := primitiveProc{
-		f:       f,
-		nArgs:   nArgs,
-		hasTail: hasTail,
-	}
-
-	return &object{
-		t: primitiveT,
-		v: p,
-	}
-}
-
-func cons(o1, o2 *object) *object {
-
-	r := &object{
-		t: listT,
-		v: &list{
-			car: o1,
-			cdr: o2,
-		},
-	}
-
-	return r
-}
-
-func consPrimitive(args ...*object) (*object, error) {
-	return cons(args[0], args[1]), nil
-}
-
-func car(args ...*object) (*object, error) {
-	o := args[0]
-	if !isList(o) {
-		return nil, typeMismatch(listT, o.t)
-	}
-
-	if o.v == nil {
-		return nil, fmt.Errorf("empty list")
-	}
-
-	return o.v.(*list).car, nil
-}
-
-func cdr(args ...*object) (*object, error) {
-	o := args[0]
-	if !isList(o) {
-		return nil, typeMismatch(listT, o.t)
-	}
-
-	if o.v == nil {
-		return nil, fmt.Errorf("reached empty list")
-	}
-
-	return o.v.(*list).cdr, nil
-}
-
-func cdxr(depth int) primitiveFunc {
-	return func(args ...*object) (*object, error) {
-		o := args[0]
-		var err error
-		for i := 0; i < depth; i++ {
-			o, err = cdr(o)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		return o, nil
-	}
-}
-
-var (
-	cddr  = cdxr(2)
-	cdddr = cdxr(3)
-)
-
-func cadxr(depth int) primitiveFunc {
-	f := cdxr(depth)
-	return func(args ...*object) (*object, error) {
-		o := args[0]
-		o, err := f(o)
-		if err != nil {
-			return nil, err
-		}
-
-		return car(o)
-	}
-}
-
-var (
-	caddr  = cadxr(2)
-	cadddr = cadxr(3)
-)
-
-func cadr(args ...*object) (*object, error) {
-	o := args[0]
-	o, err := cdr(o)
-	if err != nil {
-		return nil, err
-	}
-
-	return car(o)
-}
-
-func eq(args ...*object) (*object, error) {
-	o1, o2 := args[0], args[1]
-
-	if o1.t != o2.t || o1.v != o2.v {
-		return boolObj(false), nil
-	}
-
-	return boolObj(true), nil
-}
-
-func quit(args ...*object) (*object, error) {
-	os.Exit(0)
-
-	return nil, nil
-}
-
-func read(args ...*object) (*object, error) {
-	r := bufio.NewReader(os.Stdin)
-
-	s, err := collectInput(r, "> ")
-	if err != nil {
-		return nil, err
-	}
-
-	return parse(s)
-}
-
-func write(args ...*object) (*object, error) {
-	fmt.Printf("%s\n", args[0])
-	return nil, nil
-}
-
-func evalProc(args ...*object) (*object, error) {
-	o := args[0]
-	eObj := args[1]
-
-	if !isEnvironment(eObj) {
-		return nil, typeMismatch(environmentT, eObj.t)
-	}
-
-	e := eObj.v.(*env)
-
-	return eval(o, e)
-}
-
-func nullEnv(args ...*object) (*object, error) {
-	o := args[0]
-
-	if !isNum(o) && o.v.(number).t != intT {
-		return nil, typeMismatch(numT, o.t)
-	}
-
-	n := o.v.(number).intVal
-
-	if n != 7 {
-		return nil, fmt.Errorf("null-environment supports only R7RS")
-	}
-
-	globalEnv := &env{
-		m:     globalEnvMap,
-		outer: nil,
-	}
-
-	ret := &object{
-		t: environmentT,
-		v: &env{
-			m:     map[string]*object{},
-			outer: globalEnv,
-		},
-	}
-
-	return ret, nil
-}
-
 /* ANALYSIS */
 
 func isSelfEvaluating(o *object) bool {
@@ -617,7 +279,7 @@ func isSelfEvaluating(o *object) bool {
 func isTaggedList(o *object, tag string) bool {
 	if isList(o) && !isEmptyList(o) {
 		l := o.v.(*list)
-		if isIdent(l.car) {
+		if isSymbol(l.car) {
 			return l.car.v.(string) == tag
 		}
 	}
@@ -700,10 +362,10 @@ func expand(o *object, e *env) (*object, error) {
 	tail, _ := cdr(o)
 	done := false
 
-	if isIdent(head) {
-		m := e.lookup(head.v.(string))
+	if isSymbol(head) {
+		m, ok := e.lookup(head.v.(string))
 
-		if m != nil && isMacro(m) {
+		if ok && m != nil && isMacro(m) {
 			glog.V(3).Infof("found macro %s", head.String())
 			argv := listToVec(tail)
 			glog.V(3).Infof("expanding %s", o.String())
@@ -876,7 +538,7 @@ func evalSyntaxDefinition(o *object, e *env) (*object, error) {
 		return nil, err
 	}
 
-	if !isIdent(id) {
+	if !isSymbol(id) {
 		return nil, typeMismatch(symbolT, id.t)
 	}
 
@@ -952,7 +614,7 @@ func evalQuasiquote(o *object, e *env, level int) (*object, error) {
 	case isEmptyList(q):
 		glog.V(3).Infof("empty list. returning")
 		return o, nil
-	case isSelfEvaluating(q) || isIdent(q):
+	case isSelfEvaluating(q) || isSymbol(q):
 		glog.V(3).Infof("self-evaluating. returning")
 		return o, nil
 	case isQuasiquoted(q):
@@ -1023,7 +685,7 @@ func evalVector(objs []*object, e *env) ([]*object, error) {
 func evalLambdaParams(params *object) ([]string, bool, error) {
 	switch {
 	case !isList(params):
-		if !isIdent(params) {
+		if !isSymbol(params) {
 			return nil, false, typeMismatch(symbolT, params.t)
 		}
 		return []string{params.v.(string)}, true, nil
@@ -1058,7 +720,7 @@ func evalLambdaParams(params *object) ([]string, bool, error) {
 
 	paramStrs := make([]string, len(paramObjs))
 	for i, p := range paramObjs {
-		if !isIdent(p) {
+		if !isSymbol(p) {
 			return nil, false, fmt.Errorf("invalid parameter value %s", p)
 		}
 
@@ -1116,8 +778,8 @@ Tailcall:
 	case isSelfEvaluating(o):
 		return o, nil
 	case o.t == symbolT:
-		ret := e.lookup(o.v.(string))
-		if ret == nil {
+		ret, ok := e.lookup(o.v.(string))
+		if !ok {
 			return nil, fmt.Errorf("unknown identifier %s", o)
 		}
 		return ret, nil
@@ -1207,21 +869,18 @@ var globalEnvMap = map[string]*object{
 	"cons":   procGen(consPrimitive, 2, false),
 	"car":    procGen(car, 1, false),
 	"cdr":    procGen(cdr, 1, false),
-	"cddr":   procGen(cddr, 1, false),
-	"cdddr":  procGen(cdddr, 1, false),
-	"cadr":   procGen(cadr, 1, false),
-	"caddr":  procGen(caddr, 1, false),
-	"cadddr": procGen(cadddr, 1, false),
 	"eq?":    procGen(eq, 2, false),
 	"quit":   procGen(quit, 0, false),
 	"exit":   procGen(quit, 0, false),
-	"+":      procGen(numOpGen(add, parseNum("0"), false), 0, true),
-	"-":      procGen(numOpGen(sub, parseNum("0"), true), 0, true),
-	"*":      procGen(numOpGen(mul, parseNum("1"), false), 0, true),
-	"/":      procGen(numOpGen(div, parseNum("1.0"), true), 0, true),
+	"+":      procGen(binaryOpGen(add, parseNum("0"), false), 0, true),
+	"-":      procGen(binaryOpGen(sub, parseNum("0"), true), 0, true),
+	"*":      procGen(binaryOpGen(mul, parseNum("1"), false), 0, true),
+	"/":      procGen(binaryOpGen(div, parseNum("1.0"), true), 0, true),
 	"read":   procGen(read, 0, false),
 	"write":  procGen(write, 1, false),
 	"eval":   procGen(evalProc, 2, false),
+	"symbol?": procGen(isTypeProcGen(isSymbol), 1, false),
+	"symbol->string": procGen(symbolToString, 1, false),
 }
 
 func init() {
@@ -1279,7 +938,7 @@ func REPL() {
 	}
 
 	e := &env{
-		m: map[string]*object{},
+		m:     map[string]*object{},
 		outer: outer,
 	}
 
