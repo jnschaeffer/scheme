@@ -101,3 +101,10 @@
 
 (define (list . obj)
   obj)
+
+(define (reverse x)
+  (letrec ((helper (lambda (accum rest)
+                     (if (null? rest)
+                         accum
+                         (helper (cons (car rest) accum) (cdr rest))))))
+    (helper '() x)))
