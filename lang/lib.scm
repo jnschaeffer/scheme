@@ -19,9 +19,9 @@
 	(if (eq? bindings `())
 	  `(let () ,@(cons body1 rest))
 	  `(let (,(car bindings))
-		 (let* ,(cdr bindings) body1 ,@rest)))))
+		 (let* ,(cdr bindings) ,body1 ,@rest)))))
 
-(define-syntax letrec
+(define-syntax letrec*
   (lambda (bindings body1 . rest)
     `((lambda () ,@(map (lambda (x) `(define ,(car x) ,(cadr x))) bindings)
              ,@(cons body1 rest)))))
@@ -43,7 +43,7 @@
          (and ,@(cdr vals))))))
 
 (define (caxr n)
-  (letrec ((helper
+  (letrec* ((helper
             (lambda (n x)
               (if (eq? n 0)
                   x
@@ -51,7 +51,7 @@
     (lambda (x) (helper n x))))
 
 (define (cdxr n)
-  (letrec ((helper
+  (letrec* ((helper
             (lambda (n x)
               (if (eq? n 0)
                   x
@@ -103,8 +103,18 @@
   obj)
 
 (define (reverse x)
-  (letrec ((helper (lambda (accum rest)
+  (letrec* ((helper (lambda (accum rest)
                      (if (null? rest)
                          accum
                          (helper (cons (car rest) accum) (cdr rest))))))
     (helper '() x)))
+
+(define-syntax include
+  (lambda (f)
+    (letrec* ((p (open-input-file f))
+           (read-file (lambda (accum p)
+                        (let ((o (read p)))
+                          (if (eof-object? o)
+                              (reverse accum)
+                              (read-file (cons o accum) p))))))
+      `(begin ,@(read-file `() p)))))

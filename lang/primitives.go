@@ -1,7 +1,6 @@
 package lang
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 )
@@ -134,17 +133,6 @@ func quit(args ...*object) (*object, error) {
 	os.Exit(0)
 
 	return nil, nil
-}
-
-func read(args ...*object) (*object, error) {
-	r := bufio.NewReader(os.Stdin)
-
-	s, err := collectInput(r, "> ")
-	if err != nil {
-		return nil, err
-	}
-
-	return parse(s)
 }
 
 func write(args ...*object) (*object, error) {

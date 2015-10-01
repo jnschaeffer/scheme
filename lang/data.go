@@ -6,8 +6,6 @@ import (
 	"github.com/golang/glog"
 	"io"
 	"os"
-
-	"strings"
 )
 
 type objType int
@@ -31,7 +29,9 @@ const (
 	errorT
 	macroT
 	environmentT
-	
+	portT
+	eofT
+
 	qualifiedSymT
 
 	intT
@@ -53,6 +53,8 @@ var typeMap = map[objType]string{
 	macroT:       "macro",
 	errorT:       "error",
 	environmentT: "environment",
+	portT:        "port",
+	eofT:         "eof",
 }
 
 func typeMismatch(exp, obs objType) error {
@@ -65,7 +67,7 @@ func isTypeGen(t objType) func(o *object) bool {
 	}
 }
 
-func isTypeProcGen(f func (o *object) bool) primitiveFunc {
+func isTypeProcGen(f func(o *object) bool) primitiveFunc {
 	return func(o ...*object) (*object, error) {
 		b := f(o[0])
 
@@ -91,8 +93,9 @@ var (
 	isPrimitive   = isTypeGen(primitiveT)
 	isMacro       = isTypeGen(macroT)
 	isEnvironment = isTypeGen(environmentT)
+	isPort        = isTypeGen(portT)
+	isEOF         = isTypeGen(eofT)
 )
-
 
 type env struct {
 	m     map[string]*object
@@ -493,7 +496,7 @@ func evalDefine(o *object, e *env) (*object, error) {
 
 	e.m[idStr] = evaled
 
-	return evaled, nil
+	return nil, nil
 }
 
 func evalAssignment(o *object, e *env) (*object, error) {
@@ -866,48 +869,49 @@ Tailcall:
 }
 
 var globalEnvMap = map[string]*object{
-	"cons":   procGen(consPrimitive, 2, false),
-	"car":    procGen(car, 1, false),
-	"cdr":    procGen(cdr, 1, false),
-	"eq?":    procGen(eq, 2, false),
-	"quit":   procGen(quit, 0, false),
-	"exit":   procGen(quit, 0, false),
-	"+":      procGen(binaryOpGen(add, parseNum("0"), false), 0, true),
-	"-":      procGen(binaryOpGen(sub, parseNum("0"), true), 0, true),
-	"*":      procGen(binaryOpGen(mul, parseNum("1"), false), 0, true),
-	"/":      procGen(binaryOpGen(div, parseNum("1.0"), true), 0, true),
-	"read":   procGen(read, 0, false),
-	"write":  procGen(write, 1, false),
-	"eval":   procGen(evalProc, 2, false),
-	"symbol?": procGen(isTypeProcGen(isSymbol), 1, false),
-	"pair?": procGen(isTypeProcGen(isList), 1, false),
-	"string?": procGen(isTypeProcGen(isList), 1, false),
-	"symbol->string": procGen(symbolToString, 1, false),
+	"cons":            procGen(consPrimitive, 2, false),
+	"car":             procGen(car, 1, false),
+	"cdr":             procGen(cdr, 1, false),
+	"eq?":             procGen(eq, 2, false),
+	"quit":            procGen(quit, 0, false),
+	"exit":            procGen(quit, 0, false),
+	"+":               procGen(binaryOpGen(add, parseNum("0"), false), 0, true),
+	"-":               procGen(binaryOpGen(sub, parseNum("0"), true), 0, true),
+	"*":               procGen(binaryOpGen(mul, parseNum("1"), false), 0, true),
+	"/":               procGen(binaryOpGen(div, parseNum("1.0"), true), 0, true),
+	"read":            procGen(read, 0, true),
+	"write":           procGen(write, 1, false),
+	"eval":            procGen(evalProc, 2, false),
+	"symbol?":         procGen(isTypeProcGen(isSymbol), 1, false),
+	"pair?":           procGen(isTypeProcGen(isList), 1, false),
+	"string?":         procGen(isTypeProcGen(isList), 1, false),
+	"symbol->string":  procGen(symbolToString, 1, false),
+	"open-input-file": procGen(openInputFile, 1, false),
+	"close-port":      procGen(closePort, 1, false),
+	"eof-object":      procGen(eofObject, 0, false),
+	"eof-object?":     procGen(isTypeProcGen(isEOF), 1, false),
 }
 
 func init() {
 	globalEnvMap["null-environment"] = procGen(nullEnv, 1, false)
 }
 
-func collectInput(r *bufio.Reader, prompt string) (string, error) {
+func collectInput(r *bufio.Reader, prompt string, writePrompt bool) (string, error) {
 	var stmt []byte
 
 	leftCnt := 0
 	rightCnt := 0
 
-	promptOrig := prompt
 	for {
-		prompt = promptOrig
-		if leftCnt > 0 {
-			prompt = "  " + strings.Repeat("  ", leftCnt-rightCnt)
-		}
 
-		if _, err := os.Stdout.WriteString(prompt); err != nil {
-			glog.Fatal(err)
+		if writePrompt {
+			if _, err := os.Stdout.WriteString(prompt); err != nil {
+				return "", err
+			}
 		}
 		line, err := r.ReadBytes('\n')
 		if err == io.EOF {
-			return "", err
+			return string(append(stmt, line...)), err
 		}
 
 		for _, b := range line {
@@ -945,7 +949,7 @@ func REPL() {
 	}
 
 	for {
-		line, err := collectInput(input, "] ")
+		line, err := collectInput(input, "] ", true)
 		if err == io.EOF {
 			return
 		}
