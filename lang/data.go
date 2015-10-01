@@ -880,6 +880,8 @@ var globalEnvMap = map[string]*object{
 	"write":  procGen(write, 1, false),
 	"eval":   procGen(evalProc, 2, false),
 	"symbol?": procGen(isTypeProcGen(isSymbol), 1, false),
+	"pair?": procGen(isTypeProcGen(isList), 1, false),
+	"string?": procGen(isTypeProcGen(isList), 1, false),
 	"symbol->string": procGen(symbolToString, 1, false),
 }
 
