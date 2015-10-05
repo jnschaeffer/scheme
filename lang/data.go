@@ -264,76 +264,6 @@ type compoundProc struct {
 	hasTail bool
 }
 
-/* ANALYSIS */
-
-func isSelfEvaluating(o *object) bool {
-	types := []objType{boolT, numT, vecT, charT, strT, bvecT}
-
-	res := false
-	for _, t := range types {
-		if o.t == t {
-			res = true
-		}
-	}
-
-	return res
-}
-
-func isTaggedList(o *object, tag string) bool {
-	if isList(o) && !isEmptyList(o) {
-		l := o.v.(*list)
-		if isSymbol(l.car) {
-			return l.car.v.(string) == tag
-		}
-	}
-
-	return false
-}
-
-func isEmptyList(o *object) bool {
-	return isList(o) && o.v == nil
-}
-
-func isTaggedListGen(tag string) func(o *object) bool {
-	return func(o *object) bool {
-		return isTaggedList(o, tag)
-	}
-}
-
-var (
-	isQuasiquoted      = isTaggedListGen("quasiquote")
-	isQuoted           = isTaggedListGen("quote")
-	isAssignment       = isTaggedListGen("set!")
-	isDefinition       = isTaggedListGen("define")
-	isLambda           = isTaggedListGen("lambda")
-	isIf               = isTaggedListGen("if")
-	isUnquoted         = isTaggedListGen("unquote")
-	isSplicingUnquoted = isTaggedListGen("unquote-splicing")
-	isSyntaxDefinition = isTaggedListGen("define-syntax")
-)
-
-func isTrue(o *object) bool {
-	return !(o.t == boolT && o.v.(bool) == false)
-}
-
-func ifExprs(o *object) (*object, *object, *object) {
-	var pred, conseq, alt *object
-
-	args := o.v.(*list).cdr
-	argv := listToVec(args)
-
-	pred, conseq = argv[0], argv[1]
-	if len(argv) == 3 {
-		alt = argv[2]
-	}
-
-	return pred, conseq, alt
-}
-
-func isApplication(o *object) bool {
-	p, _ := car(o)
-	return isList(o) && isProc(p)
-}
 
 /* EXPANSION */
 
@@ -771,7 +701,7 @@ func evalLambda(o *object, e *env) (*object, error) {
 	return ret, nil
 }
 
-func eval(o *object, e *env) (*object, error) {
+func eval_(o *object, e *env) (*object, error) {
 
 	glog.V(4).Infof("evaluating %s", o.String())
 	fmt.Printf("evaluating %s\n", o.String())
