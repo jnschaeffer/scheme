@@ -774,6 +774,7 @@ func evalLambda(o *object, e *env) (*object, error) {
 func eval(o *object, e *env) (*object, error) {
 
 	glog.V(4).Infof("evaluating %s", o.String())
+	fmt.Printf("evaluating %s\n", o.String())
 Tailcall:
 	switch {
 	case o == nil:

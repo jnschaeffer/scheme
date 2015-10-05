@@ -118,3 +118,24 @@
                               (reverse accum)
                               (read-file (cons o accum) p))))))
       `(begin ,@(read-file `() p)))))
+
+(define inc/k
+  (lambda (x k)
+    (k (+ x 1))))
+
+(define add/k
+  (lambda (x1 x2 k)
+    (k (+ x1 x2))))
+
+(define twice/k
+  (lambda (f k1)
+    (k1 (lambda (x k2)
+          (f x (lambda (fx)
+                 (f fx k2)))))))
+
+(define compose-twice/k
+  (lambda (g f k1)
+    (k1 (lambda (x k2)
+          (f x (lambda (fx1)
+                 (f x (lambda (fx2)
+                        (g fx1 fx2 k2)))))))))
