@@ -100,6 +100,7 @@ var (
 type env struct {
 	m     map[string]*object
 	outer *env
+	depth int
 }
 
 func (e *env) lookup(k string) (*object, bool) {
@@ -385,7 +386,10 @@ func extendEnv(params []string, vals []*object, hasTail bool, e *env) (*env, err
 	ret := &env{
 		m:     m,
 		outer: e,
+		depth: e.depth + 1,
 	}
+
+	fmt.Printf("env extended to depth %d\n", ret.depth)
 
 	return ret, nil
 }
@@ -701,10 +705,9 @@ func evalLambda(o *object, e *env) (*object, error) {
 	return ret, nil
 }
 
-func eval_(o *object, e *env) (*object, error) {
+func eval(o *object, e *env) (*object, error) {
 
 	glog.V(4).Infof("evaluating %s", o.String())
-	fmt.Printf("evaluating %s\n", o.String())
 Tailcall:
 	switch {
 	case o == nil:
@@ -793,6 +796,7 @@ Tailcall:
 
 		o = body[len(body)-1]
 
+		fmt.Printf("going to tailcall with %s\n", o)
 		goto Tailcall
 	}
 
@@ -821,6 +825,7 @@ var globalEnvMap = map[string]*object{
 	"close-port":      procGen(closePort, 1, false),
 	"eof-object":      procGen(eofObject, 0, false),
 	"eof-object?":     procGen(isTypeProcGen(isEOF), 1, false),
+	"cps":             procGen(cpsTransformOp, 2, false),
 }
 
 func init() {

@@ -139,3 +139,38 @@
           (f x (lambda (fx1)
                  (f x (lambda (fx2)
                         (g fx1 fx2 k2)))))))))
+
+(define (eq?/k k x y) (k (eq? x y)))
+(define (sub/k k x y) (k (- x y)))
+(define (*/k k x y) (k (* x y)))
+
+(define f-aux/k
+  (lambda (n a)
+    (if (eq?/k n 0)
+        a
+        (f-aux/k (sub/k n 1) (*/k n a)))))
+
+(define f-aux/k2
+  (lambda (k0 n a)
+    (eq?/k (lambda (k1)
+             (if k1
+                 (k0 a)
+                 (*/k (lambda (k3)
+                        (sub/k (lambda (k2)
+                                 (f-aux/k2 k0 k2 k3)) n 1)) n a))) n 0)))
+
+(define fact/k
+  (lambda (n)
+    (if (eq?/k n 0)
+        1
+        (*/k n (fact/k (sub/k n 1))))))
+
+(define fact/k2
+  (lambda (k7 n)
+    (eq?/k (lambda (k8)
+             (if k8
+                 (k7 1)
+                 (sub/k (lambda (k10)
+                          (fact/k2 (lambda (k9)
+                                    (*/k k7 n k9)) k10)) n 1))) n 0)))
+

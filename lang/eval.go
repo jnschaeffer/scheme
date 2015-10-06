@@ -1,5 +1,9 @@
 package lang
 
+import (
+	"log"
+)
+
 type closure struct {
 	expr analyzedExpr
 	env  *env
@@ -23,7 +27,7 @@ func newEvaluator() *evaluator {
 
 func (e *evaluator) eval() {
 	for c := range e.next {
-		_, err := eval(c.expr, c.env)
+		_, err := eval_(c.expr, c.env)
 
 		if err != nil {
 			log.Fatalf("EVAL: %s", err.Error())
@@ -31,6 +35,6 @@ func (e *evaluator) eval() {
 	}
 }
 
-func eval(expr analyzedExpr, e *env) (*object, error) {
+func eval_(expr analyzedExpr, e *env) (*object, error) {
 	return expr(e)
 }
