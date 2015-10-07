@@ -103,6 +103,23 @@ type env struct {
 	depth int
 }
 
+func (e *env) extend(ids []string, vals []*object) *env {
+	depth := e.depth + 1
+	m := make(map[string]*object, len(ids))
+
+	for i, id := range ids {
+		m[id] = vals[i]
+	}
+
+	fmt.Printf("extending env to depth %d with %v", m)
+
+	return &env{
+		m: m,
+		outer: e,
+		depth: depth,
+	}
+}
+
 func (e *env) lookup(k string) (*object, bool) {
 	for e != nil {
 		if o, ok := e.m[k]; ok {

@@ -73,14 +73,60 @@ func isApplication(o *object) bool {
 	return isList(o) && isProc(p)
 }
 
-type analyzedExpr func(e *env) (*object, error)
+/* ANALYSIS */
+
+type analyzedExpr func(*evaluator, *env) (*object, error)
+
+type compoundProc struct {
+	params  []string
+	body    analyzedExpr
+	nArgs   int
+	e       *env
+	hasTail bool
+}
+
+func (p *compoundProc) bindArgs(o []*object) (*env, error) {
+	var tail []*object
+	var boundVals []*object
+
+	for i, v := range o {
+		switch {
+		case i < len(p.params)-1:
+			boundVals = append(boundVals, v)
+		case i == len(p.params)-1:
+			if p.hasTail {
+				tail = append(tail, v)
+			} else {
+				boundVals = append(boundVals, v)
+			}
+		case i > len(p.params)-1:
+			if !p.hasTail {
+				return nil, fmt.Errorf("too many arguments")
+			}
+
+			tail = append(tail, v)
+		}
+	}
+
+	if p.hasTail {
+		boundVals = append(boundVals, vecToList(tail))
+	}
+
+	if len(boundVals) < len(p.params) {
+		return nil, fmt.Errorf("not enough arguments")
+	}
+
+	extended := p.e.extend(p.params, boundVals)
+
+	return extended, nil
+}
 
 func analyze(o *object) (analyzedExpr, error) {
 	return nil, nil
 }
 
 func analyzeSelfEvaluating(o *object) (analyzedExpr, error) {
-	f := func(e *env) (*object, error) {
+	f := func(ev *evaluator, e *env) (*object, error) {
 		return o, nil
 	}
 
@@ -88,8 +134,9 @@ func analyzeSelfEvaluating(o *object) (analyzedExpr, error) {
 }
 
 func analyzeQuoted(o *object) (analyzedExpr, error) {
-	f := func(e *env) (*object, error) {
-		return cadr(o)
+	f := func(ev *evaluator, e *env) (*object, error) {
+		c, _ := cadr(o)
+		return c, nil
 	}
 
 	return f, nil
@@ -100,7 +147,7 @@ func analyzeIdent(o *object) (analyzedExpr, error) {
 		return nil, typeMismatch(symT, o.t)
 	}
 
-	f := func(e *env) (*object, error) {
+	f := func(ev *evaluator, e *env) (*object, error) {
 		id := o.v.(string)
 
 		v, ok := e.lookup(id)
@@ -133,8 +180,8 @@ func analyzeDefinition(o *object) (analyzedExpr, error) {
 		return nil, err
 	}
 
-	f := func(e *env) (*object, error) {
-		o, err := exprResult(e)
+	f := func(ev *evaluator, e *env) (*object, error) {
+		o, err := evalDirect(exprResult, e)
 
 		if err != nil {
 			return nil, err
@@ -154,43 +201,168 @@ func analyzeAssignment(o *object) (analyzedExpr, error) {
 }
 
 func analyzeIf(o *object) (analyzedExpr, error) {
-	/*
-		v := listToVec(o)[1:]
+	v := listToVec(o)[1:]
+	
+	var pred, conseq, alt *object
+	
+	switch len(v) {
+	case 2:
+		pred = v[0]
+		conseq = v[1]
+		alt = boolObj(false)
+	case 3:
+		pred = v[0]
+		conseq = v[1]
+		alt = v[2]
+	default:
+		return nil, fmt.Errorf("length mismatch: %d", len(v))
+	}
+	
+	var (
+		pExpr, cExpr, aExpr analyzedExpr
+		err error
+	)
+	
+	if pExpr, err = analyze(pred); err != nil {
+		return nil, err
+	}
+	
+	if cExpr, err = analyze(conseq); err != nil {
+		return nil, err
+	}
 
-		var pred, conseq, alt *object
+	if aExpr, err = analyze(alt); err != nil {
+		return nil, err
+	}
 
-		switch len(v) {
-		case 2:
-			pred = v[0]
-			conseq = v[1]
-		case 3:
-			pred = v[0]
-			conseq = v[1]
-			alt = v[2]
-		default:
-			return nil, fmt.Errorf("length mismatch: %d", len(v))
+	f := func(ev *evaluator, e *env) (*object, error) {
+		p, err := evalDirect(pExpr, e)
+		if err != nil {
+			return nil, err
+		}
+
+		var next analyzedExpr
+		if isTrue(p) {
+			next = cExpr
+		} else {
+			next = aExpr
+		}
+
+		// Pass along to evaluator
+		c := closure{
+			expr: next,
+			env: e,
+		}
+
+		ev.next <- c
+
+		return nil, nil
+	}
+
+	return f, nil
+}
+
+func analyzeLambda(o *object) (analyzedExpr, error) {
+	v := listToVec(o)[1:]
+
+	if len(v) < 2 {
+		return nil, fmt.Errorf("LAMBDA: not enough arguments")
+	}
+
+	return nil, nil
+}
+
+func wrapPrimitive(p primitiveProc, o []*object) (analyzedExpr, error) {
+	var boundVals, tail []*object
+
+	for i, v := range o {
+		switch {
+		case i < p.nArgs-1:
+			boundVals = append(boundVals, v)
+		case i == p.nArgs-1:
+			if p.hasTail {
+				tail = append(tail, v)
+			} else {
+				boundVals = append(boundVals, v)
+			}
+		case i > p.nArgs-1:
+			if !p.hasTail {
+				return nil, fmt.Errorf("too many arguments")
+			}
+
+			tail = append(tail, v)
+		}
+	}
+
+	if p.hasTail {
+		boundVals = append(boundVals, vecToList(tail))
+	}
+
+	if len(boundVals) < p.nArgs {
+		return nil, fmt.Errorf("not enough arguments")
+	}
+
+	f := func(ev *evaluator, e *env) (*object, error) {
+		return p.f(o...)
+	}
+
+	return f, nil
+}
+
+func analyzeApplication(o *object) (analyzedExpr, error) {
+	v := listToVec(o)
+	exprs := make([]analyzedExpr, len(v))
+
+	f := func(ev *evaluator, e *env) (*object, error) {
+		p, err := evalDirect(exprs[0], e)
+		if err != nil {
+			return nil, err
+		}
+		if !(isProc(p) || isPrimitive(p)) {
+			return nil, typeMismatch(procT, p.t)
+		}
+
+		objs := make([]*object, len(exprs) - 1)
+		for i, expr := range exprs[1:] {
+			o, err := evalDirect(expr, e)
+			if err != nil {
+				return nil, err
+			}
+
+			objs[i] = o
 		}
 
 		var (
-			pExpr, cExpr, aExpr analyzedExpr
-			err error
+			next analyzedExpr
+			nextEnv *env
 		)
 
-		if pExpr, err = analyze(pred); err != nil {
-			return nil, err
-		}
-
-		if cExpr, err = analyze(conseq); err != nil {
-			return nil, err
-		}
-
-		if alt != nil {
-			if aExpr, err = analyze(alt); err != nil {
+		if isProc(p) {
+			proc := p.v.(*compoundProc)
+			next = proc.body
+			ne, err := proc.bindArgs(objs)
+			if err != nil {
 				return nil, err
 			}
+
+			nextEnv = ne
+		} else {
+			n, err := wrapPrimitive(p.v.(primitiveProc), objs)
+			if err != nil {
+				return nil, err
+			}
+
+			next = n
+			nextEnv = e
 		}
-	*/
-	f := func(e *env) (*object, error) {
+
+		c := closure {
+			expr: next,
+			env: nextEnv,
+		}
+
+		ev.next <- c
+
 		return nil, nil
 	}
 
@@ -374,7 +546,7 @@ func cpsApplication(o *object, k *object) (*object, error) {
 
 	ks := make(map[int][2]*object) // map of [k-symbol, sub-expr] pairs
 
-	for i := 1; i < len(v); i++ {
+	for i := 0; i < len(v); i++ {
 		p := v[i]
 		switch {
 		case isLambda(p):
@@ -402,7 +574,7 @@ func cpsApplication(o *object, k *object) (*object, error) {
 
 	result := vecToList(renamed)
 
-	for i := 1; i < len(v); i++ {
+	for i := 0; i < len(v); i++ {
 		pair, ok := ks[i]
 		if ok {
 			subexp, subK := pair[0], pair[1]
