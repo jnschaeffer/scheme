@@ -103,6 +103,14 @@ type env struct {
 }
 
 func (e *env) extend(ids []string, vals []*object) *env {
+	fmt.Printf("mutating env with values %v\n", ids)
+
+	for i, id := range ids {
+		e.m[id] = vals[i]
+	}
+
+	return e
+/*
 	depth := e.depth + 1
 	m := make(map[string]*object, len(ids))
 
@@ -117,6 +125,7 @@ func (e *env) extend(ids []string, vals []*object) *env {
 		outer: e,
 		depth: depth,
 	}
+*/
 }
 
 func (e *env) lookup(k string) (*object, bool) {

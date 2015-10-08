@@ -29,7 +29,6 @@
 %type <obj> qq_template_or_splice splicing_unquotation
 %type <objs> list_items exprs qq_templates_or_splices idents
 %type <obj> conditional lambda formals program definition def_formals datum_ident
-%type <objs> definitions
 
 %start start
 
@@ -47,7 +46,6 @@ start:
 
 program:
   expr
-| definition
 
 definition:
   LPAREN DEFINE IDENT expr RPAREN
@@ -57,8 +55,11 @@ definition:
 | LPAREN DEFINE LPAREN def_formals RPAREN exprs RPAREN
   {
     definition := $4
+    ident, _ := car(definition)
+    params, _ := cdr(definition)
     body := vecToList($6)
-    $$ = cons(symbolObj("define"), cons(definition, body))
+    lambdaStmt := cons(symbolObj("lambda"), cons(params, body))
+    $$ = cons(symbolObj("define"), cons(ident, cons(lambdaStmt, emptyList)))
   }
 
 def_formals:
@@ -76,6 +77,7 @@ expr:
 | literal
 | procedure
 | conditional
+| definition
 | lambda
 | LPAREN RPAREN
   {
@@ -93,25 +95,8 @@ conditional:
     $$ = cons(symbolObj("if"), cons($3, cons($4, cons($5, emptyList))))
   }
 
-definitions:
-  definition
-  {
-    $$ = []*object{$1}
-  }
-| definitions definition
-  {
-    $$ = append($1, $2)
-  }
-
 lambda:
-  LPAREN LAMBDA formals definitions exprs RPAREN
-  {
-	e := vecToList(append($4, $5...))
-    r := cons(symbolObj("lambda"), cons($3, e))
-	fmt.Printf("emitting %s\n", r)
-	$$ = r
-  }
-| LPAREN LAMBDA formals exprs RPAREN
+ LPAREN LAMBDA formals exprs RPAREN
   {
 	e := vecToList($4)
     $$ = cons(symbolObj("lambda"), cons($3, e))

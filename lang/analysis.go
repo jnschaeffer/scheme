@@ -480,6 +480,7 @@ func analyzeApplication(o *object) (analyzedExpr, error) {
 	}
 
 	f := func(ev *evaluator, e *env) (*object, error) {
+		fmt.Printf("analyzing application %s with ev %s\n", o, ev)
 		p, err := evalDirect(exprs[0], e)
 		if err != nil {
 			return nil, err
@@ -571,12 +572,8 @@ func cpsTransform(expr, k *object, wrapValues bool) (*object, error) {
 		}
 
 		return rewritten, nil
-	case isDefinition(expr) || isQuoted(expr):
-		if wrapValues {
-			return cpsWrap(expr, k), nil
-		}
-
-		return expr, nil
+	case isDefinition(expr):
+		return cpsDefinition(expr, k, wrapValues)
 	case isIf(expr):
 		return cpsIf(expr, k)
 	case isBegin(expr):
@@ -591,6 +588,28 @@ func cpsTransform(expr, k *object, wrapValues bool) (*object, error) {
 		return expr, nil
 	}
 
+}
+
+func cpsDefinition(o *object, k *object, wrapValues bool) (*object, error) {
+	v := listToVec(o)
+
+	if len(v) != 3 {
+		return nil, fmt.Errorf("not enough arguments to definition")
+	}
+
+	cpsBody, err := cpsTransform(v[2], k, false)
+	if err != nil {
+		return nil, err
+	}
+
+	v[2] = cpsBody
+
+	rewritten := vecToList(v)
+	if wrapValues {
+		rewritten = cpsWrap(rewritten, k)
+	}
+
+	return rewritten, nil
 }
 
 func cpsAssignment(o *object, k *object) *object {
@@ -638,6 +657,14 @@ func cpsLambda(o *object) (*object, error) {
 	}
 
 	v[1] = newFormals
+
+	for i := 2; i < len(v) - 1; i++ {
+		r, err := cpsTransform(v[i], kObj, false)
+		if err != nil {
+			return nil, err
+		}
+		v[i] = r
+	}
 
 	last := len(v) - 1
 	lastStmt := v[last]
