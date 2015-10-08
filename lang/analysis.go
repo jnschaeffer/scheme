@@ -521,6 +521,8 @@ func analyzeApplication(o *object) (analyzedExpr, error) {
 
 			next = n
 			nextEnv = e
+
+			return evalDirect(next, nextEnv)
 		}
 
 		c := closure{
@@ -570,11 +572,15 @@ func cpsTransform(expr, k *object, wrapValues bool) (*object, error) {
 
 		return rewritten, nil
 	case isDefinition(expr) || isQuoted(expr):
+		if wrapValues {
+			return cpsWrap(expr, k), nil
+		}
+
 		return expr, nil
 	case isIf(expr):
 		return cpsIf(expr, k)
-	//case isBegin(expr):
-	//	return cpsSequence(expr, k, false)
+	case isBegin(expr):
+		return cpsSequence(expr, k, false)
 	case isList(expr):
 		return cpsSequence(expr, k, true)
 	default:
@@ -747,7 +753,13 @@ func cpsSequence(o *object, k *object, isApplication bool) (*object, error) {
 		renamed[i] = v[i-1]
 	}
 	if isApplication {
-		result = vecToList(renamed)
+		// Ugly hack for primitives
+		if isSymbol(renamed[0]) && globalPrimitiveMap[renamed[0].v.(string)] != nil {
+			renamed[0], renamed[1] = renamed[1], renamed[0]
+			result = cons(renamed[0], cons(vecToList(renamed[1:]), emptyList))
+		} else {
+			result = vecToList(renamed)
+		}
 	} else {
 		result = renamed[len(renamed)-1]
 	}

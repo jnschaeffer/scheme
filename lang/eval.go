@@ -66,13 +66,14 @@ func evalDirect(expr analyzedExpr, e *env) (*object, error) {
 	} else {
 		fmt.Printf("error...%s\n", err)
 	}
-	return expr(nil, e)
+
+	return o, err
 }
 
 func Run(r io.Reader) {
 	input := bufio.NewReader(r)
 	outer := &env{
-		m:     globalEnvMap,
+		m:     globalPrimitiveMap,
 		outer: nil,
 	}
 

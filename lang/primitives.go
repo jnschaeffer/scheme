@@ -140,35 +140,6 @@ func write(args ...*object) (*object, error) {
 	return nil, nil
 }
 
-func nullEnv(args ...*object) (*object, error) {
-	o := args[0]
-
-	if !isNum(o) && o.v.(number).t != intT {
-		return nil, typeMismatch(numT, o.t)
-	}
-
-	n := o.v.(number).intVal
-
-	if n != 7 {
-		return nil, fmt.Errorf("null-environment supports only R7RS")
-	}
-
-	globalEnv := &env{
-		m:     globalEnvMap,
-		outer: nil,
-	}
-
-	ret := &object{
-		t: environmentT,
-		v: &env{
-			m:     map[string]*object{},
-			outer: globalEnv,
-		},
-	}
-
-	return ret, nil
-}
-
 func symbolToString(o ...*object) (*object, error) {
 	s := o[0]
 	if !isSymbol(s) {

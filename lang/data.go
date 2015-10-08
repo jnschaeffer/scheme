@@ -281,7 +281,7 @@ type compoundProc_ struct {
 	hasTail bool
 }
 
-var globalEnvMap = map[string]*object{
+var globalPrimitiveMap = map[string]*object{
 	"cons":            procGen(consPrimitive, 2, false),
 	"car":             procGen(car, 1, false),
 	"cdr":             procGen(cdr, 1, false),
@@ -302,11 +302,6 @@ var globalEnvMap = map[string]*object{
 	"close-port":      procGen(closePort, 1, false),
 	"eof-object":      procGen(eofObject, 0, false),
 	"eof-object?":     procGen(isTypeProcGen(isEOF), 1, false),
-	"cps":             procGen(cpsTransformOp, 2, false),
-}
-
-func init() {
-	globalEnvMap["null-environment"] = procGen(nullEnv, 1, false)
 }
 
 func collectInput(r *bufio.Reader, prompt string, writePrompt bool) (string, error) {
