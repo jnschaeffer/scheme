@@ -140,19 +140,6 @@ func write(args ...*object) (*object, error) {
 	return nil, nil
 }
 
-func evalProc(args ...*object) (*object, error) {
-	o := args[0]
-	eObj := args[1]
-
-	if !isEnvironment(eObj) {
-		return nil, typeMismatch(environmentT, eObj.t)
-	}
-
-	e := eObj.v.(*env)
-
-	return eval(o, e)
-}
-
 func nullEnv(args ...*object) (*object, error) {
 	o := args[0]
 

@@ -174,3 +174,5 @@
                           (fact/k2 (lambda (k9)
                                     (*/k k7 n k9)) k10)) n 1))) n 0)))
 
+((lambda (k0 x) (define y 1) (set/k (lambda (k1) (add/k (lambda (k2) k2) x y)) x 2)) write 1)
+
