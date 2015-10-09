@@ -48,7 +48,6 @@ func (e *evaluator) eval(expr analyzedExpr, env *env) {
 	}()
 
 	for c := range e.next {
-		fmt.Printf("received async eval\n")
 		_, err := c.expr(e, c.env)
 
 		if err != nil {
@@ -61,11 +60,6 @@ func (e *evaluator) eval(expr analyzedExpr, env *env) {
 
 func evalDirect(expr analyzedExpr, e *env) (*object, error) {
 	o, err := expr(nil, e)
-	if err == nil {
-		fmt.Printf("evaluated expr to %s\n", o)
-	} else {
-		fmt.Printf("error...%s\n", err)
-	}
 
 	return o, err
 }

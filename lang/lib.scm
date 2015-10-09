@@ -176,3 +176,24 @@
 
 ((lambda (k0 x) (define y 1) (set/k (lambda (k1) (add/k (lambda (k2) k2) x y)) x 2)) write 1)
 
+(define fib 
+  (lambda (k0 n a)
+    ((lambda (k2)
+       (if k2 
+           ((lambda (k1) 
+              (begin (k0 k1))) a) 
+           ((lambda (k3) 
+              ((lambda (k4) 
+                 (fib (lambda (k1)
+                        (begin (k0 k1))) k3 k4))
+               (* a n))) 
+            (- n 1))))
+     (eq? n 0))))
+
+
+(begin
+  (define (foo x)
+    (if (eq? x 0)
+	#t
+	(foo 0)))
+  (foo 

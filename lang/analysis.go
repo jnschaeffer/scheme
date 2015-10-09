@@ -135,6 +135,10 @@ func analyze(o *object) (analyzedExpr, error) {
 		return analyzeSelfEvaluating(o)
 	case isSymbol(o):
 		return analyzeIdent(o)
+	case isBegin(o):
+		seq, _ := cdr(o)
+		v := listToVec(seq)
+		return analyzeSequence(v)
 	case isQuoted(o):
 		return analyzeQuoted(o)
 	case isDefinition(o):
@@ -480,7 +484,6 @@ func analyzeApplication(o *object) (analyzedExpr, error) {
 	}
 
 	f := func(ev *evaluator, e *env) (*object, error) {
-		fmt.Printf("analyzing application %s with ev %s\n", o, ev)
 		p, err := evalDirect(exprs[0], e)
 		if err != nil {
 			return nil, err
@@ -559,6 +562,27 @@ func cpsTransformOp(o ...*object) (*object, error) {
 	return cpsTransform(o[0], o[1], false)
 }
 
+func isPrimitiveApplication(o *object) bool {
+	if !(isList(o) && !isEmptyList(o)) {
+		return false
+	}
+
+	f, err := car(o)
+	if err != nil {
+		panic(err)
+	}
+
+	if !isSymbol(f) {
+		return false
+	}
+
+	s := f.v.(string)
+
+	_, ok := globalPrimitiveMap[s]
+
+	return ok
+}
+
 func cpsTransform(expr, k *object, wrapValues bool) (*object, error) {
 	switch {
 	case isLambda(expr):
@@ -572,14 +596,16 @@ func cpsTransform(expr, k *object, wrapValues bool) (*object, error) {
 		}
 
 		return rewritten, nil
-	case isDefinition(expr):
-		return cpsDefinition(expr, k, wrapValues)
+	case isDefinition(expr) || isAssignment(expr):
+		return cpsDefinition(expr, k, true)
 	case isIf(expr):
 		return cpsIf(expr, k)
 	case isBegin(expr):
-		return cpsSequence(expr, k, false)
+		return cpsBegin(expr, k)
+	case isPrimitiveApplication(expr):
+		return cpsPrimitiveApplication(expr, k)
 	case isList(expr):
-		return cpsSequence(expr, k, true)
+		return cpsApplication(expr, k)
 	default:
 		if wrapValues {
 			expr = cpsWrap(expr, k)
@@ -590,11 +616,35 @@ func cpsTransform(expr, k *object, wrapValues bool) (*object, error) {
 
 }
 
+func cpsPrimitiveApplication(o *object, k *object) (*object, error) {
+	args, err := cdr(o)
+	if err != nil {
+		return nil, err
+	}
+
+	argVec := listToVec(args)
+	argVec, kSubs, err := substituteSequence(argVec)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := car(o)
+	if err != nil {
+		return nil, err
+	}
+
+	args = vecToList(argVec)
+
+	renamed := cons(k, cons(cons(f, args), emptyList))
+
+	return wrapSequence(renamed, kSubs)
+}
+
 func cpsDefinition(o *object, k *object, wrapValues bool) (*object, error) {
 	v := listToVec(o)
 
 	if len(v) != 3 {
-		return nil, fmt.Errorf("not enough arguments to definition")
+		return nil, fmt.Errorf("not enough arguments to definition/assignment")
 	}
 
 	cpsBody, err := cpsTransform(v[2], k, false)
@@ -610,10 +660,6 @@ func cpsDefinition(o *object, k *object, wrapValues bool) (*object, error) {
 	}
 
 	return rewritten, nil
-}
-
-func cpsAssignment(o *object, k *object) *object {
-	return nil
 }
 
 func cpsWrap(o *object, k *object) *object {
@@ -645,43 +691,43 @@ func cpsFormals(o *object) (*object, *object, error) {
 }
 
 func cpsLambda(o *object) (*object, error) {
-	v := listToVec(o)
+	lambdaObj, err := car(o)
+	if err != nil {
+		return nil, err
+	}
 
-	formals := v[1]
+	formals, err := cadr(o)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := cddr(o)
+	if err != nil {
+		return nil, err
+	}
+	body = cons(symbolObj("begin"), body)
 
 	// Rewrite formals
 	kObj, newFormals, err := cpsFormals(formals)
-
 	if err != nil {
 		return nil, err
 	}
 
-	v[1] = newFormals
-
-	for i := 2; i < len(v) - 1; i++ {
-		r, err := cpsTransform(v[i], kObj, false)
-		if err != nil {
-			return nil, err
-		}
-		v[i] = r
-	}
-
-	last := len(v) - 1
-	lastStmt := v[last]
-
-	// Rewrite body of lambda
-	newLastStmt, err := cpsTransform(lastStmt, kObj, true)
-
+	cpsBody, err := cpsBegin(body, kObj)
 	if err != nil {
 		return nil, err
 	}
 
-	v[last] = newLastStmt
+	fmt.Printf("cps body: k object is %s\n", kObj)
+	fmt.Printf("cps body: rewrote %s as %s\n", body, cpsBody)
 
-	return vecToList(v), nil
+	rewritten := cons(lambdaObj, cons(newFormals, cons(cpsBody, emptyList)))
+
+	return rewritten, nil
 }
 
 func cpsIf(o *object, k *object) (*object, error) {
+	fmt.Printf("CPS-IF: rewriting %s with k as %s\n", o, k)
 	v := listToVec(o)
 
 	var pred, conseq, alt *object
@@ -746,64 +792,109 @@ func cpsIf(o *object, k *object) (*object, error) {
 	return result, nil
 }
 
-func cpsSequence(o *object, k *object, isApplication bool) (*object, error) {
-	// Rename all arguments to application first
-	v := listToVec(o)
+type kSubstitution struct {
+	expr *object
+	k *object
+}
 
-	ks := make(map[int][2]*object) // map of [k-symbol, sub-expr] pairs
+func wrapSequence(o *object, ks []kSubstitution) (*object, error) {
+	for i := len(ks)-1; i >= 0; i-- {
+		kSub := ks[i]
+		newK := cpsWrapLambda(o, kSub.k)
+		rewritten, err := cpsTransform(kSub.expr, newK, false)
+		if err != nil {
+			return nil, err
+		}
 
+		o = rewritten
+	}
+
+	return o, nil
+}
+
+func substituteSequence(v []*object) ([]*object, []kSubstitution, error) {
+	var kSubs []kSubstitution
 	for i := 0; i < len(v); i++ {
 		p := v[i]
 		switch {
 		case isLambda(p):
 			lExpr, err := cpsLambda(p)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 
 			v[i] = lExpr
-		case isList(p) && !(isDefinition(p) || isQuoted(p) || isIf(p)):
+		case isList(p) && !(isIf(p) || isQuoted(p)):
 			exprK := gensym("k")
-			ks[i] = [2]*object{p, exprK}
+			kSubs = append(kSubs, kSubstitution{expr: p, k: exprK})
 			v[i] = exprK
-		default:
-			v[i] = p
 		}
 	}
 
-	var result *object
+	return v, kSubs, nil
+}
 
-	renamed := make([]*object, len(v)+1)
-	renamed[0] = v[0]
-	renamed[1] = k
-	for i := 2; i < len(renamed); i++ {
-		renamed[i] = v[i-1]
+func cpsApplication(o *object, k *object) (*object, error) {
+	args, err := cdr(o)
+	if err != nil {
+		return nil, err
 	}
-	if isApplication {
-		// Ugly hack for primitives
-		if isSymbol(renamed[0]) && globalPrimitiveMap[renamed[0].v.(string)] != nil {
-			renamed[0], renamed[1] = renamed[1], renamed[0]
-			result = cons(renamed[0], cons(vecToList(renamed[1:]), emptyList))
-		} else {
-			result = vecToList(renamed)
+
+	argVec := listToVec(args)
+	argVec, kSubs, err := substituteSequence(argVec)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := car(o)
+	if err != nil {
+		return nil, err
+	}
+
+	args = vecToList(argVec)
+
+	renamed := cons(f, cons(k, args))
+
+	return wrapSequence(renamed, kSubs)
+}
+
+func cpsBegin(o *object, k *object) (*object, error) {
+	stmts, err := cdr(o)
+	if err != nil {
+		return nil, err
+	}
+	begin, err := car(o)
+	if err != nil {
+		return nil, err
+	}
+
+	stmtVec := listToVec(stmts)
+	switch len(stmtVec) {
+	case 0:
+		return nil, fmt.Errorf("empty begin")
+	case 1:
+		r, err := cpsTransform(stmtVec[0], k, true)
+		if err != nil {
+			return nil, err
 		}
-	} else {
-		result = renamed[len(renamed)-1]
+
+		return cons(begin, cons(r, emptyList)), nil
 	}
 
-	for i := len(v) - 1; i >= 0; i-- {
-		pair, ok := ks[i]
-		if ok {
-			subexp, subK := pair[0], pair[1]
-			fmt.Printf("wrapping %s around %s\n", subexp, result)
-			result = cpsWrapLambda(result, subK)
-			rewrittenSubexp, err := cpsTransform(subexp, result, false)
-			if err != nil {
-				return nil, err
-			}
-			result = rewrittenSubexp
-		}
+	intermediates := stmtVec[:len(stmtVec)-1]
+	intermediates, kSubs, err := substituteSequence(intermediates)
+	if err != nil {
+		return nil, err
 	}
 
-	return result, nil
+	last, err := cpsTransform(stmtVec[len(stmtVec)-1], k, true)
+	if err != nil {
+		return nil, err
+	}
+
+	stmtVec = append(intermediates, last)
+	stmts = vecToList(stmtVec)
+	renamed := cons(begin, stmts)
+
+	return wrapSequence(renamed, kSubs)
 }
