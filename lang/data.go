@@ -110,7 +110,7 @@ func (e *env) extend(ids []string, vals []*object) *env {
 		m[id] = vals[i]
 	}
 
-	fmt.Printf("extending env to depth %d with %v\n", depth, ids)
+	//fmt.Printf("extending env to depth %d with %v\n", depth, ids)
 
 	return &env{
 		m: m,

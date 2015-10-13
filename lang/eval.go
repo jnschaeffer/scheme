@@ -54,8 +54,6 @@ func (e *evaluator) eval(expr analyzedExpr, env *env) {
 			log.Fatalf("EVAL: %s", err.Error())
 		}
 	}
-
-	fmt.Println("done!")
 }
 
 func evalDirect(expr analyzedExpr, e *env) (*object, error) {

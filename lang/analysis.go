@@ -604,7 +604,7 @@ func cpsTransform(expr, k *object, wrapValues bool) (*object, error) {
 		return cpsBegin(expr, k)
 	case isPrimitiveApplication(expr):
 		return cpsPrimitiveApplication(expr, k)
-	case isList(expr):
+	case isList(expr) && !(isEmptyList(expr) || isQuoted(expr)):
 		return cpsApplication(expr, k)
 	default:
 		if wrapValues {
