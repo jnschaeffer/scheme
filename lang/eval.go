@@ -2,9 +2,11 @@ package lang
 
 import (
 	"bufio"
-	"fmt"
+	"bytes"
+	_ "fmt"
 	"io"
 	"log"
+	"os"
 )
 
 type closure struct {
@@ -29,9 +31,9 @@ func newEvaluator() *evaluator {
 func (e *evaluator) writeAndQuitOp() *object {
 	f := func(o ...*object) (*object, error) {
 		v := o[0]
-		fmt.Printf("%s\n", v.String())
+		//fmt.Printf("%s\n", v.String())
 		close(e.next)
-		return nil, nil
+		return v, nil
 	}
 
 	p := procGen(f, 1, false)
@@ -39,21 +41,28 @@ func (e *evaluator) writeAndQuitOp() *object {
 	return p
 }
 
-func (e *evaluator) eval(expr analyzedExpr, env *env) {
+func (e *evaluator) eval(expr analyzedExpr, env *env) (*object, error) {
 	go func() {
 		e.next <- closure{
 			expr: expr,
-			env: env,
+			env:  env,
 		}
 	}()
 
+	var (
+		o   *object
+		err error
+	)
+
 	for c := range e.next {
-		_, err := c.expr(e, c.env)
+		o, err = c.expr(e, c.env)
 
 		if err != nil {
-			log.Fatalf("EVAL: %s", err.Error())
+			return nil, err
 		}
 	}
+
+	return o, nil
 }
 
 func evalDirect(expr analyzedExpr, e *env) (*object, error) {
@@ -62,49 +71,77 @@ func evalDirect(expr analyzedExpr, e *env) (*object, error) {
 	return o, err
 }
 
-func Run(r io.Reader) {
-	input := bufio.NewReader(r)
+type Runtime struct {
+	e *env
+}
+
+func NewRuntime() *Runtime {
 	outer := &env{
-		m:     globalPrimitiveMap,
+		m: globalPrimitiveMap,
 		outer: nil,
 	}
 
 	globalEnv := &env{
-		m:     map[string]*object{},
+		m: map[string]*object{},
 		outer: outer,
 	}
 
-	line, err := collectInput(input, "] ", false)
-	if err == io.EOF {
-		return
+	return &Runtime{
+		e: globalEnv,
 	}
-	if err != nil {
-		fmt.Printf("ERROR: %s\n", err)
-		return
+}
+
+func (rt *Runtime) run(r io.Reader, isREPL bool) (*object, error) {
+	input := bufio.NewReader(r)
+
+	line, err := collectInput(input, "] ", isREPL)
+	if err != nil && err != io.EOF {
+		log.Printf("ERROR: %s\n", err)
+		return nil, err
 	}
 
 	p, err := parse(line)
 	if err != nil {
-		fmt.Printf("PARSE: %s\n", err)
-		return
+		log.Printf("PARSE: %s\n", err)
+		return nil, err
 	}
 
 	evaluator := newEvaluator()
 
 	cps, err := cpsTransform(p, evaluator.writeAndQuitOp(), true)
 	if err != nil {
-		fmt.Printf("CPS: %s\n", err)
-		return
+		log.Printf("CPS: %s\n", err)
+		return nil, err
 	}
 
-	fmt.Println(cps)
-	
+	log.Print(cps)
 	expr, err := analyze(cps)
 
 	if err != nil {
-		fmt.Printf("ANALYZE: %s\n", err)
-		return
+		log.Printf("ANALYZE: %s\n", err)
+		return nil, err
 	}
 
-	evaluator.eval(expr, globalEnv)
+	return evaluator.eval(expr, rt.e)
+}
+
+func (rt *Runtime) Eval(r io.Reader) (*object, error) {
+	return rt.run(r, false)
+}
+
+func (rt *Runtime) REPL() error {
+	for {
+		_, err := rt.run(os.Stdin, true)
+		if err != nil {
+			log.Print(err)
+		}
+	}
+
+	return nil
+}
+
+func (rt *Runtime) EvalString(s string) (*object, error) {
+	b := bytes.NewBufferString(s)
+
+	return rt.Eval(b)
 }

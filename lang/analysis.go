@@ -718,16 +718,12 @@ func cpsLambda(o *object) (*object, error) {
 		return nil, err
 	}
 
-	fmt.Printf("cps body: k object is %s\n", kObj)
-	fmt.Printf("cps body: rewrote %s as %s\n", body, cpsBody)
-
 	rewritten := cons(lambdaObj, cons(newFormals, cons(cpsBody, emptyList)))
 
 	return rewritten, nil
 }
 
 func cpsIf(o *object, k *object) (*object, error) {
-	fmt.Printf("CPS-IF: rewriting %s with k as %s\n", o, k)
 	v := listToVec(o)
 
 	var pred, conseq, alt *object
@@ -835,25 +831,24 @@ func substituteSequence(v []*object) ([]*object, []kSubstitution, error) {
 }
 
 func cpsApplication(o *object, k *object) (*object, error) {
-	args, err := cdr(o)
-	if err != nil {
-		return nil, err
-	}
-
-	argVec := listToVec(args)
+	argVec := listToVec(o)
 	argVec, kSubs, err := substituteSequence(argVec)
 	if err != nil {
 		return nil, err
 	}
 
-	f, err := car(o)
+	args := vecToList(argVec)
+	f, err := car(args)
 	if err != nil {
 		return nil, err
 	}
 
-	args = vecToList(argVec)
+	rest, err := cdr(args)
+	if err != nil {
+		return nil, err
+	}
 
-	renamed := cons(f, cons(k, args))
+	renamed := cons(f, cons(k, rest))
 
 	return wrapSequence(renamed, kSubs)
 }
